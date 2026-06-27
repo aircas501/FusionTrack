@@ -1,0 +1,259 @@
+# ========================================
+# FusionTrack 多视角多Clip训练配置
+# 支持MemoryBank、ReID模型、三元组损失
+# ========================================
+
+# ========================================
+# 基础配置
+# ========================================
+GIT_VERSION:
+MODE: train
+CONFIG_PATH:
+VISUALIZE: False
+AVAILABLE_GPUS: '1'  # 使用第2、3、4张GPU（物理索引1、2、3）
+DEVICE: cuda
+OUTPUTS_DIR: ./outputs/uav_multiview_reid/
+USE_DISTRIBUTED: Fasle  # 启用分布式训练
+USE_CHECKPOINT: False
+CHECKPOINT_LEVEL: 2
+RESUME1: /xxx/MeMOTR-main/outputs/uav_multiview_reid/model_checkpoint.pth # 主模型checkpoint路径
+RESUME2:  /xxx/MeMOTR-main/outputs/uav_multiview_reid/reid_checkpoint.pth # ReID模型checkpoint路径（null表示不加载预训练）
+RESUME_SCHEDULER: True
+MULTI_CHECKPOINT: False
+
+# ========================================
+# 数据集配置
+# ========================================
+DATASET: UAV_V
+USE_MOTSYNTH: False
+USE_CROWDHUMAN: False
+DATA_ROOT: /xxx/MeMOTR-main/dataset
+DATA_PATH:
+NUM_WORKERS: 4  # 数据加载的worker数量
+BATCH_SIZE: 1  # 每个GPU的batch size（总batch size = 1 * 3 = 3）
+ACCUMULATION_STEPS: 1  # 梯度累积步数
+COCO_SIZE: True
+OVERFLOW_BBOX: True
+REVERSE_CLIP: 0.0
+VIEW_POINT: 4  # 视角数量（c001, c002, c003, c004）
+
+# ========================================
+# 多Clip配置
+# ========================================
+NUM_CLIPS_PER_SAMPLE: 1  # 每个样本的clip数量
+CLIP_INTERVAL: "random_range"  # 间隔模式: "consecutive", "fixed", "random", "random_range"
+CLIP_INTERVAL_MIN: 10  # random_range模式的最小间隔
+CLIP_INTERVAL_MAX: 30  # random_range模式的最大间隔
+# CLIP_INTERVAL_FRAMES: 15  # fixed/random模式使用
+
+# ========================================
+# 采样配置
+# ========================================
+SAMPLE_STEPS: [30, 40, 50, 60]
+SAMPLE_LENGTHS: [2, 2, 2, 2, 2]  # 不同训练阶段的每clip帧数
+SAMPLE_MODES: [random_interval]
+SAMPLE_INTERVALS: [5]
+SAMPLE_MOT17_JOIN: 0
+
+# ========================================
+# 模型配置
+# ========================================
+BACKBONE: resnet50
+HIDDEN_DIM: 256  # query特征维度
+FFN_DIM: 2048
+NUM_FEATURE_LEVELS: 4
+NUM_HEADS: 8
+NUM_ENC_POINTS: 4
+NUM_DEC_POINTS: 4
+NUM_ENC_LAYERS: 6
+NUM_DEC_LAYERS: 6
+MERGE_DET_TRACK_LAYER: 1
+ACTIVATION: ReLU
+RETURN_INTER_DEC: True
+EXTRA_TRACK_ATTN: False
+AUX_LOSS: True
+USE_DAB: True
+UPDATE_THRESH: 0.5
+LONG_MEMORY_LAMBDA: 0.01
+NUM_DET_QUERIES: 300
+PRETRAINED_MODEL: 
+
+# ========================================
+# ReID模型配置
+# ========================================
+REID_MODEL: Transformer  # Transformer
+REID_LOSS: True  # 是否启用ReID损失
+
+# ReID模型选择
+USE_SIMPLE_REID: False  # True: 使用SimpleReIDModel (MLP), False: 使用build_transformer
+REID_MLP_LAYERS: 2  # SimpleReIDModel的MLP层数（仅在USE_SIMPLE_REID=True时使用）
+REID_DROPOUT: 0.1  # SimpleReIDModel的dropout率
+
+# Transformer ReID模型配置（仅在USE_SIMPLE_REID=False时使用）
+QUERY_DIM: 256  # query特征维度（必须与HIDDEN_DIM一致）
+EMBED_DIM: 256  # ReID特征维度
+NUM_REID: 1620  # ID类别数
+NUM_CLASS: 1620  
+REID_USE_TRANSFORMER: False  
+REID_TRANSFORMER_LAYERS: 2  # Transformer层数（仅在REID_USE_TRANSFORMER=True时使用）
+REID_REINIT_NON_TRANSFORMER: True  # 加载预训练后是否重新初始化非Transformer层（query_proj、layer_norm、bottleneck、classifier）
+
+# ReID分类头配置
+ID_LOSS_TYPE: 'arcface'  # 'arcface', 'cosface', 'amsoftmax', 'circle', 'softmax'
+COSINE_SCALE: 30.0  # 余弦损失scale
+COSINE_MARGIN: 0.5  # 余弦损失margin
+NECK: 'bnneck'  # 'bnneck' 或 'no'
+NECK_FEAT: 'after'  # 'after' 或 'before'
+
+# ReID Pool配置
+MAX_FORGET_LENGTH: 30  # ReIDPool中每个track的query特征最大历史长度
+KEEP_ALL_BATCH_REID: True  # 是否保留整个batch的reid特征
+REID_UPDATE_WEIGHT: 0.8
+
+# ========================================
+# MemoryBank配置
+# ========================================
+MEMORY_BANK_LEN: 30  
+TEMPORAL_K: 6  # 时序更新的历史帧数
+DECAY_ALPHA: 0.25  # 时序衰减系数
+REID_UPDATE_WEIGHT: 0.1  # ReID特征更新权重
+
+# Query更新配置
+
+ENABLE_CROSS_FRAME_UPDATE: True  # 是否启用跨帧query更新（训练和推理都启用）
+ENABLE_CROSS_VIEW_UPDATE: False  # 禁用跨视角query更新（需要先关联才知道同一ID）
+MEMORY_TAU_FRAMES: 5  # 使用最近tau帧进行跨帧更新
+MEMORY_TIME_DECAY_ALPHA: 0.1  # 时间衰减系数alpha，权重 = exp(-alpha * dt)
+
+# ========================================
+# 三元组损失配置
+# ========================================
+USE_TRIPLET_LOSS: True  # 是否使用三元组损失
+TRIPLET_MARGIN: 0.3  # 三元组损失的margin
+TRIPLET_NUM_SAMPLES: 32  # 目标采样数量
+TRIPLET_HARD_MINING: True  # 是否使用hard negative mining
+TRIPLET_LOSS_WEIGHT: 0.1  # 三元组损失的权重（仅在不使用uncertainty loss时有效）
+NORMALIZE_FEATURE: True  # 是否对特征进行L2归一化
+
+# 三元组损失的边界条件处理
+TRIPLET_MIN_SAMPLES: 4  # 最小样本数量（低于此数量不计算triplet loss）
+TRIPLET_MIN_UNIQUE_IDS: 2  # 最小不同ID数量（低于此数量不计算triplet loss）
+TRIPLET_VERBOSE: False  # 是否输出详细日志（用于调试采样问题）
+
+# ========================================
+# 训练配置
+# ========================================
+SEED: 42
+EPOCHS: 80
+ONLY_TRAIN_QUERY_UPDATER_AFTER: 80
+DROPOUT: 0.0
+TP_DROP_RATE: 0.0
+FP_INSERT_RATE: 0.0
+LR: 2.0e-4
+LR_BACKBONE: 2.0e-5
+LR_POINTS: 2.0e-5
+WEIGHT_DECAY: 0.0001
+CLIP_MAX_NORM: 0.1
+
+# ⭐ ReID独立学习率配置
+LR_REID: 1.0e-3  # ReID基础学习率
+LR_CLASSIFIER: 1.0e-3  # 分类器学习率
+LR_BOTTLENECK: 1.0e-3  # Bottleneck学习率
+REID_GRAD_CLIP: 5.0  # ReID梯度裁剪
+LR_SCHEDULER: MultiStep
+LR_DROP_RATE: 0.1
+LR_DROP_MILESTONES: [50]
+
+# ========================================
+# 损失权重配置
+# ========================================
+# DETR matcher
+MATCH_COST_CLASS: 2
+MATCH_COST_BBOX: 5
+MATCH_COST_GIOU: 2
+
+# DETR loss
+LOSS_WEIGHT_FOCAL: 2
+LOSS_WEIGHT_L1: 5
+LOSS_WEIGHT_GIOU: 2
+
+# Aux Loss Weight
+AUX_LOSS_WEIGHT: [1.0, 1.0, 1.0, 1.0, 1.0]
+
+# ReID损失权重配置
+# Part 1: 当前帧内部损失
+ID_LOSS_WEIGHT: 1.0  # ID 分类损失权重（当前帧）
+TRIPLET_LOSS_WEIGHT: 0.1  # Triplet Loss 权重（当前帧内部）
+
+# Part 2: 跨 clip 对比损失
+CROSS_CLIP_LOSS_WEIGHT: 0.1  # 跨 clip 对比损失权重
+CROSS_CLIP_MARGIN: 0.5  # 跨 clip 对比的 margin
+
+# 向后兼容
+REID_LOSS_WEIGHT: 0.5  # 总 ReID 损失权重（
+
+# make_loss.py 所需配置
+# ⚠️ 使用 'softmax' 而不是 'softmax_triplet'，因为triplet loss由单独的triplet_loss_fn处理
+SAMPLER: 'softmax'  # 'softmax', 'softmax_triplet' - 只使用ID分类损失
+METRIC_LOSS_TYPE: 'triplet'  # 度量学习损失类型（保留以兼容，但不使用）
+IF_LABELSMOOTH: 'off'  # 是否使用标签平滑
+NO_MARGIN: True  # triplet loss是否不使用margin
+SOLVER: 0.3  # solver配置（用于triplet loss）
+MARGIN: 0.3  # triplet loss的margin（如果NO_MARGIN=False时使用）
+
+# ========================================
+# 不确定性加权损失配置
+# ========================================
+USE_UNCERTAINTY_LOSS: True  # 是否使用不确定性加权损失（可学习权重）
+UNCERTAINTY_OMEGA1_INIT: -1.85  # ω1初始值（用于Tracking损失）
+UNCERTAINTY_OMEGA2_INIT: -1.05  # ω2初始值（用于ReID损失）
+
+# ========================================
+# 其他配置（向后兼容，部分已不使用）
+# ========================================
+PRETRAIN_CHOICE: ''  # 不再使用（已移除backbone预训练）
+PRETRAIN_PATH: ''  # 不再使用
+TRANSFORMER_TYPE: ''  # 不再使用（已移除backbone）
+MAX_FRAME_LENGTH: 24352  # 最大帧长度（向后兼容）
+LOCAL_FEATURE: False  # 是否使用局部特征（向后兼容）
+DEPTH: 12  # Transformer深度（向后兼容）
+QUERY_LENGTH: 5  # Query长度（向后兼容）
+TIME_POS: True  # 是否使用时间位置编码（向后兼容）
+# ==================== ReID模型配置 ====================
+USE_SIMPLE_REID: False  # False=ReversibleReID（推荐）, True=SimpleReID
+
+# ==================== 映射方式选择（仅ReversibleReID）====================
+USE_MLP_MAPPING: True  
+# MLP映射配置（仅当USE_MLP_MAPPING=True时生效）
+MLP_HIDDEN_DIM: 512  # MLP隐藏层维度，默认512
+MLP_LAYERS: 2        # MLP层数，默认2（推荐2-3）
+
+# Query序列配置（ReversibleReID支持序列输入）
+MAX_QUERY_SEQ_LEN: 3  # 最大query序列长度，默认10
+
+# ==================== 多帧ReID配置 ====================
+USE_MULTIFRAME_REID: True  # 是否使用多帧query进行ReID
+REID_QUERY_WINDOW_SIZE: 6  # ReID使用的query窗口大小（帧数）
+
+
+# ========================================
+# 可逆性损失配置（Reversibility Loss / Reconstruction Loss）
+# ========================================
+#
+USE_REVERSIBILITY_LOSS: True  # 🔧 主开关：是否使用可逆性损失（重建损失）
+
+# 以下参数仅在 USE_REVERSIBILITY_LOSS=True 时生效
+REID_START_EPOCH: 40  # ReID训练开始的epoch
+REID_WARMUP_EPOCHS: 5  # ReID损失warmup的epoch数
+
+# 可逆性权重配置
+USE_LEARNABLE_REV_WEIGHT: True  # 是否使用可学习的权重（自动平衡两个损失）
+REVERSIBILITY_WEIGHT1: 0.1  # Level 1权重（Query↔Embedding），固定权重模式下使用
+REVERSIBILITY_WEIGHT2: 0.1  # Level 2权重（ReID稳定性），固定权重模式下使用
+
+
+# 消融实验配置
+USE_CROSSFRAME: True
+USE_CROSSVIEW: False 
+USE_REID: False
+
