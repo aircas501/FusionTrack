@@ -1,41 +1,41 @@
 # FusionTrack
 
-## 目录
+## Table of Contents
 
-- [环境配置](#环境配置)
-- [数据集准备](#数据集准备)
-- [训练](#训练)
-- [推理](#推理)
-- [评估](#评估)
-- [配置说明](#配置说明)
-- [常见问题](#常见问题)
+- [Environment Setup](#environment-setup)
+- [Dataset Preparation](#dataset-preparation)
+- [Training](#training)
+- [Inference](#inference)
+- [Evaluation](#evaluation)
+- [Configuration](#configuration)
+- [FAQ](#faq)
 
 ---
 
-## 环境配置
+## Environment Setup
 
-### 1. 基础环境
+### 1. Base Environment
 
 ```bash
 # Python 3.8+
 # CUDA 11.3+
 # PyTorch 1.12+
 
-# 创建conda环境
+# Create conda environment
 conda create -n fusiontrack python=3.8
 conda activate fusiontrack
 
-# 安装PyTorch（根据你的CUDA版本调整）
+# Install PyTorch (adjust for your CUDA version)
 pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 --extra-index-url https://download.pytorch.org/whl/cu113
 ```
 
-### 2. 安装依赖
+### 2. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. 编译Deformable Attention
+### 3. Build Deformable Attention
 
 ```bash
 cd models/ops
@@ -45,66 +45,66 @@ cd ../..
 
 ---
 
-## 数据集准备
+## Dataset Preparation
 
-### 支持的数据集
+### Supported Datasets
 
-- **UAV_V**: 多视角无人机数据集（主要）
+- **UAV_V**: Multi-view UAV dataset (primary)
 
 
-### UAV_V 数据集结构
+### UAV_V Dataset Structure
 
 ```
 dataset/
 └── UAV_V/
     └── images/
-        ├── train/           # 训练集
+        ├── train/           # Training set
         │   ├── seq1/
-        │   │   ├── c001/    # 视角1
+        │   │   ├── c001/    # View 1
         │   │   │   ├── 000001.jpg
         │   │   │   ├── 000002.jpg
         │   │   │   └── ...
-        │   │   ├── c002/    # 视角2
-        │   │   ├── c003/    # 视角3
-        │   │   ├── c004/    # 视角4
-        │   │   └── c005/    # 视角5
+        │   │   ├── c002/    # View 2
+        │   │   ├── c003/    # View 3
+        │   │   ├── c004/    # View 4
+        │   │   └── c005/    # View 5
         │   ├── seq2/
         │   └── ...
-        ├── val/             # 验证集（结构同train）
-        └── test/            # 测试集（结构同train）
+        ├── val/             # Validation set (same structure as train)
+        └── test/            # Test set (same structure as train)
 ```
 
-### 标注文件格式
+### Annotation Format
 
-每个序列需要包含GT标注文件（MOT格式）：
+Each sequence requires GT annotation files (MOT format):
 
 ```
 dataset/UAV_V/images/train/seq1/gt/gt.txt
 ```
 
-标注格式：
+Annotation format:
 ```
 <frame_id>,<track_id>,<x>,<y>,<w>,<h>,1,-1,-1,-1
 ```
 
 ---
 
-## 训练
+## Training
 
-### 1. 基础训练命令
+### 1. Basic Training Command
 
 ```bash
-# 单GPU训练
+# Single-GPU training
 python main.py --mode train --config configs/train_uav_multiview_reid.yaml
 
-# 多GPU分布式训练（推荐）
+# Multi-GPU distributed training (recommended)
 CUDA_VISIBLE_DEVICES=0,1,2 python main.py \
     --mode train \
     --config configs/train_uav_multiview_reid.yaml \
     --use-distributed
 ```
 
-### 2. 从checkpoint恢复训练
+### 2. Resume Training from Checkpoint
 
 ```bash
 python main.py \
@@ -114,29 +114,29 @@ python main.py \
     --resume2 outputs/uav_multiview_reid/reid_checkpoint.pth
 ```
 
-### 3. 训练配置文件
+### 3. Training Configuration
 
-主要配置文件：`configs/train_uav_multiview_reid.yaml`
+Main config file: `configs/train_uav_multiview_reid.yaml`
 
 
-### 4. 训练输出
+### 4. Training Outputs
 
 ```
 outputs/
 └── uav_multiview_reid/
     ├── train/
-    │   ├── config.yaml          # 训练配置备份
-    │   └── log.txt              # 训练日志
-    ├── model_checkpoint_*.pth   # 主模型检查点
-    ├── reid_checkpoint_*.pth    # ReID模型检查点
-    └── optimizer_checkpoint_*.pth  # 优化器状态
+    │   ├── config.yaml          # Backed-up training config
+    │   └── log.txt              # Training log
+    ├── model_checkpoint_*.pth   # Main model checkpoints
+    ├── reid_checkpoint_*.pth    # ReID model checkpoints
+    └── optimizer_checkpoint_*.pth  # Optimizer state
 ```
 
 ---
 
-## 推理
+## Inference
 
-### 1. 基础推理命令
+### 1. Basic Inference Command
 
 ```bash
 python main.py \
@@ -148,24 +148,23 @@ python main.py \
     --submit-data-split test
 ```
 
-### 2. 推理配置文件
+### 2. Inference Configuration
 
-主要配置文件：`configs/submit_uav_multiview_reid.yaml`
-```
+Main config file: `configs/submit_uav_multiview_reid.yaml`
 
-### 3. 推理输出
+### 3. Inference Outputs
 
 ```
 outputs/uav_multiview_reid/test/
 └── tracker/
-    ├── seq1_c001.txt        # 跨视角关联结果
+    ├── seq1_c001.txt        # Cross-view association results
     ├── seq1_c002.txt
-    ├── seq1_c001_single.txt # 单视角结果（对比）
+    ├── seq1_c001_single.txt # Single-view results (for comparison)
     ├── seq1_c002_single.txt
     └── ...
 ```
 
-输出格式（MOT格式）：
+Output format (MOT format):
 ```
 <frame_id>,<track_id>,<x>,<y>,<w>,<h>,1,-1,-1,-1
 ```

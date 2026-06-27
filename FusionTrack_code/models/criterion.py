@@ -154,9 +154,9 @@ class ClipCriterion:
         gt_ids_to_idx = []
         for b in range(len(tracked_instances)):
             gt_ids_to_idx.append({
-                gt_id.item(): gt_idx for gt_idx, gt_id in enumerate(gt_trackinstances[b].ids) #获取batch中真实的intance的id，在tracked_instances里面对应
+                gt_id.item(): gt_idx for gt_idx, gt_id in enumerate(gt_trackinstances[b].ids)  # map GT instance IDs to indices in tracked_instances
             })
-        num_disappeared_tracked_gts = 0 #没用
+        num_disappeared_tracked_gts = 0  # unused
         for b in range(len(tracked_instances)):
             gt_idx = []
             if len(tracked_instances[b]) > 0:
@@ -182,7 +182,7 @@ class ClipCriterion:
                     idx_bool[i.item()] = False
             untracked_gt_trackinstances.append(gt_trackinstances[b][idx_bool])
 
-        # 5. Use Hungarian algorithm to matching.#保证一对一
+        # 5. Use Hungarian algorithm to matching.  # ensure one-to-one assignment
         matcher_res = self.matcher(outputs=detection_res, targets=untracked_gt_trackinstances, use_focal=True)
         matcher_res = [list(mr) for mr in matcher_res]
 
@@ -190,7 +190,7 @@ class ClipCriterion:
             for bi in range(len(res)):
                 ids = untracked_gt_trackinstances[bi].ids[res[bi][1]]
                 idx = []
-                for _ in ids:   # 遍历 ID
+                for _ in ids:   # iterate over IDs
                     idx.append(gt_ids_to_idx[bi][_.item()])
                 res[bi][1] = torch.as_tensor(idx, dtype=torch.long)
             return res
@@ -246,7 +246,7 @@ class ClipCriterion:
             # 8. Compute the classification loss.
             loss_label, true_id = self.get_loss_label(outputs=model_outputs,
                                             gt_trackinstances=gt_trackinstances,
-                                            idx_to_gts_idx=outputs_idx_to_gts_idx, get_true_id=True)##原本是没有这个true_id的，现在加上看看后面是不是有用
+                                            idx_to_gts_idx=outputs_idx_to_gts_idx, get_true_id=True)  # added true_id return for downstream use
         else:
             loss_label = self.get_loss_label(outputs=model_outputs,
                                             gt_trackinstances=gt_trackinstances,
@@ -420,22 +420,22 @@ class ClipCriterion:
         gt_ids_tensor = torch.cat(gt_ids) 
 
         if get_true_id:
-            # 1. 找出模型认为置信度最高的类别
+            # 1. Find the class with the highest predicted confidence
             max_score_indices = torch.max(pred_logits.sigmoid(), dim=1).indices
             
-            # 2. 找出“预测类别”等于“真实类别”的那些 Query
-            #    注意：这里还包含了背景类（假设背景类也是对的），如果你只想要前景，需要加一步过滤
+            # 2. Find queries whose predicted class equals the ground-truth class
+            #    Note: this includes background class matches; add filtering for foreground-only ReID if needed
             is_classified_correctly = (max_score_indices == gt_labels)
             
-            # (可选建议) 3. 过滤掉背景类。通常 ReID 只需要前景目标的 ID
-            # 假设 self.num_classes 是背景类的索引（或者 self.num_classes + 1，视具体实现而定）
+            # (Optional) 3. Filter out background class. ReID typically needs foreground target IDs only
+            # Assume self.num_classes is the background index (or self.num_classes + 1, depending on implementation)
             # is_foreground = (gt_labels != self.num_classes)
             # valid_mask = is_classified_correctly & is_foreground
             
-            # 这里暂时按你的原逻辑，只看分类是否正确
+            # For now, keep original logic: only check whether classification is correct
             valid_mask = is_classified_correctly
 
-            # 4. 【关键修改】返回对应的 gt_ids，而不是 gt_labels
+            # 4. Key change: return corresponding gt_ids instead of gt_labels
             return loss, gt_ids_tensor[valid_mask]
         
         # if get_true_id:
@@ -495,7 +495,7 @@ def sigmoid_focal_loss(inputs, targets, alpha: float = 0.25, gamma: float = 2):
         alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
         loss = alpha_t * loss
 
-    return loss.mean(1).sum()   # 在类别上计算平均
+    return loss.mean(1).sum()   # average over classes
 
 
 def build(config: dict):

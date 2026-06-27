@@ -337,12 +337,12 @@ class TransReID(nn.Module):
             position = torch.arange(self.max_frame_length + 1).unsqueeze(1)
             div_term = torch.exp(torch.arange(0, self.embed_dim, 2) * (-math.log(10000.0) / self.embed_dim))
             pe = torch.zeros(self.max_frame_length + 1, self.embed_dim)
-            pe[:, 0::2] = torch.sin(position * div_term)  # 偶数索引使用sin
-            pe[:, 1::2] = torch.cos(position * div_term)  # 奇数索引使用cos
+            pe[:, 0::2] = torch.sin(position * div_term)  # even indices use sin
+            pe[:, 1::2] = torch.cos(position * div_term)  # odd indices use cos
             self.pos_embed = nn.Parameter(pe, requires_grad=False)
         else:
             self.pos_embed = nn.Parameter(torch.zeros(self.reid_query_length + 1, self.embed_dim))
-            trunc_normal_(self.pos_embed, std=.02)  # 使用截断正态分布初始化位置嵌入
+            trunc_normal_(self.pos_embed, std=.02)  # initialize positional embedding with truncated normal distribution
         
         # self.cam_num = camera
         # self.sie_xishu = sie_xishu

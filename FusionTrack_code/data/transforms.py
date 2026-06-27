@@ -57,7 +57,7 @@ class MultiRandomHorizontalFlip:
 
 class MultiRandomResize:
     """
-    随机进行 Resize
+    Randomly resize images.
     """
     def __init__(self, sizes: list | tuple, max_size=None):
         self.sizes = sizes

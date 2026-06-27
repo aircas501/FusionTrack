@@ -43,10 +43,10 @@ class MemoryBank(nn.Module):
         "views": {
           cam_id(str): {
             track_id(int): {
-              "cam": str,                   # 视角名称
-              "t": int|float,               # 时间戳
-              "id": int,                    # 目标ID
-              "feat": Tensor(H)             # query特征
+              "cam": str,                   # view/camera name
+              "t": int|float,               # timestamp
+              "id": int,                    # target ID
+              "feat": Tensor(H)             # query feature
             }, ...
           }, ...
         }
@@ -73,17 +73,17 @@ class MemoryBank(nn.Module):
         self.bank_len = int(bank_len)
         self.hidden_dim = int(hidden_dim)
         self.use_dab = bool(use_dab)
-        self.temporal_k = int(temporal_k)#用几个帧计算
+        self.temporal_k = int(temporal_k)  # number of frames used for temporal update
         self.decay_alpha = float(decay_alpha)
         self.num_heads = int(num_heads)
         self.store_fp16 = bool(store_fp16)
         self.training = bool(training)
-        self.reid_update_weight = float(reid_update_weight)  # ReID特征更新的权重
+        self.reid_update_weight = float(reid_update_weight)  # weight for ReID feature update
 
         # storage on CPU, computations on device
         self.runtime_device = torch.device(device)
-        # 修复：训练时也限制长度为bank_len（与clip长度一致），避免内存无限增长
-        # 训练和推理都使用相同的maxlen，因为会在clip间清空
+        # Fix: cap length at bank_len during training (matches clip length) to avoid unbounded memory growth
+        # Training and inference use the same maxlen; cleared between clips
         self.deque = deque(maxlen=self.bank_len)
 
         # projection layers for attention updates (shared)
@@ -103,7 +103,7 @@ class MemoryBank(nn.Module):
         self.norm1 = nn.LayerNorm(self.hidden_dim)
         self.norm2 = nn.LayerNorm(self.hidden_dim)
         
-        # ReID特征投影层（延迟初始化，因为不知道reid特征维度）
+        # ReID feature projection layer (lazy init; ReID dim unknown upfront)
         self.reid_proj = None
 
     # --------------------------- public APIs ---------------------------
@@ -120,38 +120,38 @@ class MemoryBank(nn.Module):
                                        alpha: float = 0.1) -> torch.Tensor:
 
         if len(historical_queries) == 0:
-            return current_query  # 没有历史帧，返回原query
+            return current_query  # no history frames; return original query
         
         device = current_query.device
         C = current_query.shape[-1]
         
-        # Stack所有历史query: (N, C)
-        # 注意：N可以是1-tau之间的任意值（历史帧不足tau时会自动使用现有的帧）
+        # Stack all historical queries: (N, C)
+        # Note: N can be 1..tau (uses available frames when history is shorter than tau)
         hist_feats = torch.stack(historical_queries, dim=0).to(device)  # (N, C), N <= tau
         
-        # 计算时间衰减权重: W = exp(-alpha * dt)
+        # Time decay weights: W = exp(-alpha * dt)
         time_diffs_tensor = torch.tensor(time_diffs, device=device, dtype=torch.float32)  # (N,)
-        time_weights = torch.exp(-alpha * time_diffs_tensor)  # (N,) - 越近的帧权重越大
+        time_weights = torch.exp(-alpha * time_diffs_tensor)  # (N,) - more recent frames get higher weight
         
-        # 使用当前query作为Q，历史queries作为K和V
-        # 简化版本：使用加权平均 + 注意力
+        # Use current query as Q, historical queries as K and V
+        # Simplified version: weighted average + attention
         # Q: (1, C), K: (N, C), V: (N, C)
         query = current_query.unsqueeze(0)  # (1, C)
         key = hist_feats  # (N, C)
         value = hist_feats  # (N, C)
         
-        # 计算注意力分数 (1, N)
+        # Attention scores (1, N)
         attn_scores = torch.matmul(query, key.T) / math.sqrt(C)  # (1, N)
         
-        # 结合时间权重
+        # Combine with time weights
         attn_scores = attn_scores.squeeze(0)  # (N,)
-        attn_scores = attn_scores * time_weights  # 时间加权
+        attn_scores = attn_scores * time_weights  # time-weighted
         attn_weights = F.softmax(attn_scores, dim=0)  # (N,)
         
-        # 加权求和
+        # Weighted sum
         updated_feat = torch.matmul(attn_weights.unsqueeze(0), value).squeeze(0)  # (C,)
         
-        # 残差连接：融合当前query和更新后的特征
+        # Residual blend of current query and updated feature
         updated_query = 0.5 * current_query + 0.5 * updated_feat
         
         return updated_query
@@ -166,12 +166,12 @@ class MemoryBank(nn.Module):
                                   cross_view: bool = True,
                                   all_view_tracks: Optional[Dict[str, Any]] = None) -> Any:
 
-        # 支持列表格式：TrackInstances.init_tracks() 返回的是 list
+        # Support list format: TrackInstances.init_tracks() returns a list
         is_list = isinstance(tracks, list)
         if is_list:
             if len(tracks) == 0:
                 return tracks
-            # 如果是列表，通常取第一个元素（batch_size=1的情况）
+            # If a list, usually take the first element (batch_size=1)
             tracks = tracks[0]
         
         ids = _safe_getattr(tracks, "ids")
@@ -184,7 +184,7 @@ class MemoryBank(nn.Module):
         
         device = q_embed.device
         
-        # 提取当前的feat（根据use_dab判断如何提取）
+        # Extract current feat (depends on use_dab)
         current_feats = self._extract_feat_from_query_embed(q_embed)
         if current_feats is None:
             return [tracks] if is_list else tracks
@@ -199,7 +199,7 @@ class MemoryBank(nn.Module):
             
             current_feat = current_feats[i]  # (C,)
             
-            # 1. 跨帧更新
+            # 1. Cross-frame update
             historical_seq = self.gather_seq(view, tid, k=tau)
             if len(historical_seq) > 0:
                 historical_queries = []
@@ -220,21 +220,21 @@ class MemoryBank(nn.Module):
             
             updated_feats.append(current_feat)
         
-        # 重新组装query_embed
+        # Reassemble query_embed
         updated_feats_tensor = torch.stack(updated_feats, dim=0).to(device)  # (N, C)
         
-        # 根据use_dab重新构造query_embed
+        # Rebuild query_embed according to use_dab
         if self.use_dab:
-            # use_dab=True: query_embed就是feat
+            # use_dab=True: query_embed is the feat
             tracks.query_embed = updated_feats_tensor
         else:
             # use_dab=False: query_embed = [pos | feat]
-            # 保留原来的pos部分，只更新feat部分
+            # Keep original pos part; update feat part only
             original_q_embed = q_embed.to(device)
             pos_part = original_q_embed[:, :self.hidden_dim]  # (N, H)
             tracks.query_embed = torch.cat([pos_part, updated_feats_tensor], dim=-1)  # (N, 2H)
         
-        # 如果输入是列表，输出也应该是列表
+        # If input is a list, output should also be a list
         return [tracks] if is_list else tracks
 
     @torch.no_grad()
@@ -243,9 +243,9 @@ class MemoryBank(nn.Module):
                         t: int | float,
                         reid_features: Dict[Tuple[str, int], torch.Tensor] = None):
         """
-        MemoryBank更新流程（训练和推理统一）：
-        1. 插入原始记录（所有视角）
-        2. 跨帧更新（temporal update）- 使用历史帧增强当前query
+        MemoryBank update flow (unified for training and inference):
+        1. Insert raw records (all views)
+        2. Cross-frame update (temporal update) - enhance current query with history
         """
         # 1) Insert raw records for all cams (no update yet)
         frame_node = self._ensure_frame_node(t)
@@ -253,7 +253,7 @@ class MemoryBank(nn.Module):
             self._insert_tracks_for_view(frame_node, cam_id, tracks)
 
         # 2) Temporal update for each (cam_id, track_id)
-        # 跨帧更新：使用同一视角的历史帧来增强当前query
+        # Cross-frame update: enhance current query with same-view history
         self._temporal_update_all(t)
 
     # Query helpers
@@ -304,11 +304,11 @@ class MemoryBank(nn.Module):
 
         view_store = frame_node["views"].setdefault(str(cam_id), {})
 
-        # 支持列表格式：TrackInstances.init_tracks() 返回的是 list
+        # Support list format: TrackInstances.init_tracks() returns a list
         if isinstance(tracks, list):
             if len(tracks) == 0:
                 return
-            # 如果是列表，通常取第一个元素（batch_size=1的情况）
+            # If a list, usually take the first element (batch_size=1)
             tracks = tracks[0]
         
         ids = _safe_getattr(tracks, "ids")
@@ -317,14 +317,14 @@ class MemoryBank(nn.Module):
 
         q_embed = _safe_getattr(tracks, "query_embed")
 
-        # 从query_embed提取特征
+        # Extract features from query_embed
         feats = self._extract_feat_from_query_embed(q_embed)
 
-        # 移到CPU存储（detach）
+        # Move to CPU for storage (detach)
         ids = _to_cpu(ids)
         feats = _to_cpu(feats)
 
-        # 写入存储（精简版）
+        # Write to storage (compact)
         for i in range(len(ids)):
             tid = int(ids[i].item())
             if tid < 0:
@@ -335,7 +335,7 @@ class MemoryBank(nn.Module):
                 "id": tid,
                 "feat": feats[i] if feats is not None else None,
             }
-            # 可选：fp16存储以节省内存
+            # Optional: store as fp16 to save memory
             if self.store_fp16 and isinstance(rec.get("feat"), torch.Tensor):
                 rec["feat"] = rec["feat"].to(dtype=torch.float16)
             view_store[tid] = rec
@@ -370,7 +370,7 @@ class MemoryBank(nn.Module):
         for cam, store in cur_frame["views"].items():
             for tid, rec_now in store.items():
                 # gather up to K previous feats for (cam, tid)
-                prev_feats, deltas = self._gather_prev_feats(cam, tid, t_now, self.temporal_k)#变成列表
+                prev_feats, deltas = self._gather_prev_feats(cam, tid, t_now, self.temporal_k)  # as lists
                 if len(prev_feats) == 0 or rec_now.get("feat") is None:
                     continue
 
@@ -382,18 +382,18 @@ class MemoryBank(nn.Module):
                 # write back updated feat (+ residual)
                 rec_now["feat"] = updated
 
-                # query_embed已删除，不需要更新
+                # query_embed removed; no update needed
 
     def _gather_prev_feats(self, cam: str, tid: int, t_now, K: int) -> Tuple[List[torch.Tensor], List[float]]:
 
         prev_feats, deltas = [], []
         count = 0
         for fr in reversed(self.deque):
-            # 不再跳过当前帧，而是将其包含在内（delta=0）
+            # Include current frame instead of skipping it (delta=0)
             view = fr["views"].get(cam, {})
             if tid in view and view[tid].get("feat") is not None:
                 prev_feats.append(view[tid]["feat"])
-                deltas.append(abs(float(t_now) - float(fr["t"])))  # 当前帧: delta=0
+                deltas.append(abs(float(t_now) - float(fr["t"])))  # current frame: delta=0
                 count += 1
                 if count >= K:
                     break
@@ -490,11 +490,11 @@ class MemoryBank(nn.Module):
     @torch.no_grad()
     def _reid_update_all_at_t(self, t_now: int | float, reid_features: Dict[Tuple[str, int], torch.Tensor]):
         """
-        使用ReID特征更新query特征
+        Update query features using ReID features.
         
         Args:
-            t_now: 当前时间戳
-            reid_features: {(view, id): reid_feat} - ReID特征字典
+            t_now: current timestamp
+            reid_features: {(view, id): reid_feat} - ReID feature dict
         """
         cur_frame = self._find_frame_node(t_now)
         if cur_frame is None:
@@ -502,32 +502,32 @@ class MemoryBank(nn.Module):
         
         for cam, store in cur_frame["views"].items():
             for tid, rec_now in store.items():
-                # 查找对应的ReID特征
+                # Look up corresponding ReID feature
                 key = (cam, tid)
                 if key not in reid_features or rec_now.get("feat") is None:
                     continue
                 
-                reid_feat = reid_features[key]  # ReID特征
-                query_feat = rec_now["feat"]  # 当前query特征
+                reid_feat = reid_features[key]  # ReID feature
+                query_feat = rec_now["feat"]  # current query feature
                 
-                # 将ReID特征投影到query特征空间并更新
-                # 简单方式：加权融合
+                # Project ReID feature into query space and update
+                # Simple approach: weighted fusion
                 reid_feat_cpu = _to_cpu(reid_feat)
                 query_feat_tensor = _ensure_tensor(query_feat, self.runtime_device, dtype=torch.float32)
                 reid_feat_tensor = _ensure_tensor(reid_feat_cpu, self.runtime_device, dtype=torch.float32)
                 
-                # 如果维度不匹配，需要投影
+                # Project if dimensions do not match
                 if reid_feat_tensor.shape[-1] != self.hidden_dim:
-                    # 延迟初始化reid_proj
+                    # Lazy-init reid_proj
                     if self.reid_proj is None:
                         self.reid_proj = nn.Linear(reid_feat_tensor.shape[-1], self.hidden_dim).to(self.runtime_device)
                     reid_feat_tensor = self.reid_proj(reid_feat_tensor)
                 
-                # 加权融合：query_feat = (1 - w) * query_feat + w * reid_feat
+                # Weighted fusion: query_feat = (1 - w) * query_feat + w * reid_feat
                 updated_feat = (1 - self.reid_update_weight) * query_feat_tensor + \
                               self.reid_update_weight * reid_feat_tensor
                 
-                # 写回更新后的特征
+                # Write back updated feature
                 rec_now["feat"] = updated_feat.detach().cpu().to(dtype=rec_now["feat"].dtype)
 
 

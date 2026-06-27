@@ -12,7 +12,7 @@ class NeighborFilter:
         min_neighbor_match_ratio=0.5,
         neighbor_sim_threshold=0.6,
         distance_metric="cosine",
-        spatial_radius=100,  # 像素
+        spatial_radius=100,  # pixels
     ):
 
         self.k_top_similarities = k_top_similarities
@@ -35,7 +35,7 @@ class NeighborFilter:
         if len(candidate_pairs) == 0:
             return [], {}
         
-        # 归一化特征
+        # Normalize features
         view1_features_norm = torch.nn.functional.normalize(view1_features, p=2, dim=1)
         view2_features_norm = torch.nn.functional.normalize(view2_features, p=2, dim=1)
         
@@ -43,13 +43,13 @@ class NeighborFilter:
         rejection_reasons = {}
         
         for idx1, idx2 in candidate_pairs:
-            # 1. 找到A和B的空间邻域内的所有目标
+            # 1. Find all targets within the spatial neighborhoods of A and B
             if view1_bboxes is None or view2_bboxes is None:
-                # 如果没有bbox信息，接受该匹配
+                # Accept the match if bbox info is unavailable
                 filtered_pairs.append((idx1, idx2))
                 continue
             
-            # 获取空间邻域内的所有目标索引
+            # Get indices of all targets within the spatial neighborhood
             neighbors_a_indices = self._find_spatial_neighbors(
                 idx1, view1_bboxes, exclude_self=True
             )
@@ -57,42 +57,42 @@ class NeighborFilter:
                 idx2, view2_bboxes, exclude_self=True
             )
             
-            # 如果邻居数量不足，跳过筛选（接受该匹配）
+            # Skip filtering if there are too few neighbors (accept the match)
             if len(neighbors_a_indices) == 0 or len(neighbors_b_indices) == 0:
                 filtered_pairs.append((idx1, idx2))
                 continue
             
-            # 2. 提取邻居特征
+            # 2. Extract neighbor features
             neighbor_features_a = view1_features_norm[neighbors_a_indices]  # (Na, D)
             neighbor_features_b = view2_features_norm[neighbors_b_indices]  # (Nb, D)
             
-            # 3. 计算邻居间的相似度矩阵
+            # 3. Compute similarity matrix between neighbors
             if self.distance_metric == "cosine":
-                # 余弦相似度 (Na, Nb)
+                # Cosine similarity (Na, Nb)
                 neighbor_sim_matrix = torch.mm(neighbor_features_a, neighbor_features_b.T)
             elif self.distance_metric == "euclidean":
-                # 欧氏距离 -> 相似度
+                # Euclidean distance -> similarity
                 dist = torch.cdist(neighbor_features_a, neighbor_features_b, p=2)
                 neighbor_sim_matrix = 1.0 / (1.0 + dist)
             else:
                 raise ValueError(f"Unknown distance metric: {self.distance_metric}")
             
-            # 4. 对于每个A的邻居，找出相似度最高的前K个B的邻居
+            # 4. For each neighbor of A, find the top-K neighbors of B by similarity
             # neighbor_sim_matrix: (Na, Nb)
             num_a_neighbors = neighbor_sim_matrix.shape[0]
             num_b_neighbors = neighbor_sim_matrix.shape[1]
             
-            # 对于每一行（A的每个邻居），找出最高的前K个相似度
+            # For each row (each neighbor of A), find the top-K similarities
             k_actual = min(self.k_top_similarities, num_b_neighbors)
             top_k_sims_per_a, _ = torch.topk(neighbor_sim_matrix, k=k_actual, dim=1)  # (Na, K)
             
-            # 5. 统计高相似度匹配的比例
-            # 计算所有top-K相似度中超过阈值的比例
+            # 5. Count the proportion of high-similarity matches
+            # Compute the fraction of top-K similarities above the threshold
             high_sim_count = (top_k_sims_per_a > self.neighbor_sim_threshold).sum().item()
             total_count = num_a_neighbors * k_actual
             match_ratio = high_sim_count / total_count if total_count > 0 else 0.0
             
-            # 6. 决策
+            # 6. Decision
             if match_ratio >= self.min_neighbor_match_ratio:
                 filtered_pairs.append((idx1, idx2))
             else:
@@ -105,29 +105,29 @@ class NeighborFilter:
     
     def _find_spatial_neighbors(self, target_idx, bboxes, exclude_self=True):
 
-        # 计算目标中心点
+        # Compute target center point
         target_bbox = bboxes[target_idx]
-        # 假设bbox格式可能是[x, y, w, h]或[cx, cy, w, h]
-        # 统一转换为中心点坐标
-        if target_bbox[2] > 0 and target_bbox[3] > 0:  # 有宽高信息
+        # bbox format may be [x, y, w, h] or [cx, cy, w, h]
+        # Convert uniformly to center coordinates
+        if target_bbox[2] > 0 and target_bbox[3] > 0:  # width and height available
             target_center = target_bbox[:2] + target_bbox[2:] / 2.0  # (cx, cy)
         else:
-            target_center = target_bbox[:2]  # 已经是中心点
+            target_center = target_bbox[:2]  # already center coordinates
         
-        # 计算所有目标的中心点
+        # Compute center points of all targets
         all_centers = bboxes[:, :2] + bboxes[:, 2:] / 2.0  # (N, 2)
         
-        # 计算到目标中心的距离
+        # Compute distance to target center
         distances = torch.norm(all_centers - target_center, p=2, dim=1)  # (N,)
         
-        # 找到空间邻域内的目标
+        # Find targets within the spatial neighborhood
         mask = (distances <= self.spatial_radius)
         
-        # 排除自身
+        # Exclude self
         if exclude_self:
             mask[target_idx] = False
         
-        # 返回邻居索引
+        # Return neighbor indices
         neighbor_indices = torch.where(mask)[0].cpu().tolist()
         
         return neighbor_indices
@@ -139,7 +139,7 @@ class NeighborFilter:
             "rejection_reasons": {}
         }
         
-        # 统计拒绝原因
+        # Aggregate rejection reasons
         for reason in rejection_reasons.values():
             if reason not in stats["rejection_reasons"]:
                 stats["rejection_reasons"][reason] = 0

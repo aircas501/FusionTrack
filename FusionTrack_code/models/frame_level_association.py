@@ -23,7 +23,7 @@ class FrameLevelCrossViewAssociator:
         self.min_votes = min_votes
         self.consistency_weight = consistency_weight
         
-        # 历史记录 [(frame_id, associations, confidence_scores), ...]
+        # history [(frame_id, associations, confidence_scores), ...]
         self.history = []
         self.prev_associations = None
         
@@ -33,7 +33,7 @@ class FrameLevelCrossViewAssociator:
                        view_names: List[str],
                        view_bboxes: Dict[str, torch.Tensor] = None) -> Dict[Tuple[str, int], int]:
 
-        # 1. 提取特征和ID
+        # 1. extract features and IDs
         view_features = {}
         view_ids = {}
         
@@ -43,19 +43,19 @@ class FrameLevelCrossViewAssociator:
             
             detections = view_detections[view_name]
             
-            # 分离track_id和feature
+            # split track_id and feature
             track_ids = [det[0] for det in detections]
             features = torch.stack([det[1] for det in detections])  # (N, C)
             
             view_features[view_name] = features
             view_ids[view_name] = track_ids
         
-        # 2. 使用基础关联器获取当前帧的关联（传递bboxes）
+        # 2. base associator for current frame (with bboxes)
         current_associations = self.base_associator.associate(
             view_features, view_ids, view_names, view_bboxes
         )
         
-        # 3. 根据策略决定最终关联
+        # 3. final associations per voting strategy
         if self.voting_strategy == "none":
             final_associations = current_associations
         elif self.voting_strategy == "sliding_window":
@@ -73,7 +73,7 @@ class FrameLevelCrossViewAssociator:
         else:
             raise ValueError(f"Unknown voting strategy: {self.voting_strategy}")
         
-        # 4. 更新历史
+        # 4. update history
         self.prev_associations = final_associations
         
         return final_associations
@@ -83,22 +83,22 @@ class FrameLevelCrossViewAssociator:
                              current_associations:  Dict,
                              view_features: Dict) -> Dict:
         """
-        滑动窗口投票
+        Sliding-window voting.
         
-        在窗口内统计每对关联出现的次数，选择出现次数最多的
+        Count pair occurrences in the window; keep the most frequent.
         """
-        # 添加到历史
+        # append to history
         self.history.append((frame_id, current_associations, view_features))
         
-        # 保持窗口大小
+        # enforce window size
         if len(self.history) > self.window_size:
             self.history.pop(0)
         
-        # 如果历史不够，直接返回当前关联
+        # insufficient history: return current associations
         if len(self.history) < self.min_votes:
             return current_associations
         
-        # 统计每对关联出现的次数
+        # count occurrences per pair
         pair_votes = defaultdict(int)
         
         for _, assoc, _ in self.history:
@@ -106,7 +106,7 @@ class FrameLevelCrossViewAssociator:
             for pair in pairs:
                 pair_votes[pair] += 1
         
-        # 根据投票重建关联
+        # rebuild associations from votes
         final_associations = self._rebuild_from_votes(pair_votes)
         
         return final_associations
@@ -116,32 +116,32 @@ class FrameLevelCrossViewAssociator:
                       current_associations: Dict,
                       view_features: Dict) -> Dict:
         """
-        加权投票
+        Weighted voting.
         
-        使用特征相似度作为权重
+        Use feature similarity as weight.
         """
-        # 添加到历史
+        # append to history
         self.history.append((frame_id, current_associations, view_features))
         
-        # 保持窗口大小
+        # enforce window size
         if len(self.history) > self.window_size:
             self.history.pop(0)
         
         if len(self.history) < self.min_votes:
             return current_associations
         
-        # 计算加权投票
+        # compute weighted votes
         pair_scores = defaultdict(float)
         
         for fid, assoc, features in self.history:
             pairs = self._extract_pairs(assoc)
             
             for pair in pairs:
-                # 计算这对的特征相似度作为权重
+                # feature similarity as pair weight
                 weight = self._compute_pair_similarity(pair, features)
                 pair_scores[pair] += weight
         
-        # 根据得分重建关联（阈值为平均得分）
+        # rebuild from scores (threshold = mean score)
         if len(pair_scores) > 0:
             threshold = np.mean(list(pair_scores.values()))
             valid_pairs = [pair for pair, score in pair_scores.items() 
@@ -159,40 +159,40 @@ class FrameLevelCrossViewAssociator:
                              current_associations: Dict,
                              view_features: Dict) -> Dict:
         """
-        时序一致性约束
+        Temporal consistency constraint.
         
-        优先保持与前一帧的关联一致
+        Prefer consistency with previous frame associations.
         """
         if self.prev_associations is None:
             return current_associations
         
-        # 对于与前一帧一致的关联，优先保留
+        # keep associations consistent with previous frame
         consistent_associations = {}
         
         for key, global_id in current_associations.items():
             if key in self.prev_associations:
                 prev_global_id = self.prev_associations[key]
                 
-                # 检查是否一致
+                # check consistency
                 if global_id == prev_global_id:
-                    # 一致，直接保留
+                    # consistent: keep
                     consistent_associations[key] = global_id
                 else:
-                    # 不一致，根据权重决定
-                    # 随机数 < consistency_weight 时保持一致
+                    # inconsistent: decide by weight
+                    # keep previous if random < consistency_weight
                     if np.random.random() < self.consistency_weight:
                         consistent_associations[key] = prev_global_id
                     else:
                         consistent_associations[key] = global_id
             else:
-                # 新出现的目标，使用当前关联
+                # new target: use current association
                 consistent_associations[key] = global_id
         
         return consistent_associations
     
     def _extract_pairs(self, associations: Dict) -> List[Tuple]:
         """
-        从关联中提取配对
+        Extract pairs from associations.
         
         Example:
             associations = {
@@ -207,21 +207,21 @@ class FrameLevelCrossViewAssociator:
                 (('view1', 1), ('view2', 5)),  # global_id=1
             ]
         """
-        # 按global_id分组
+        # group by global_id
         global_groups = defaultdict(list)
         for key, global_id in associations.items():
             global_groups[global_id].append(key)
         
-        # 提取配对（每个组内两两配对）
+        # extract pairs (within each group)
         pairs = []
         for global_id, group in global_groups.items():
             if len(group) < 2:
                 continue
             
-            # 两两配对
+            # pairwise pairs
             for i in range(len(group)):
                 for j in range(i + 1, len(group)):
-                    # 排序以保证一致性
+                    # sort for stable ordering
                     pair = tuple(sorted([group[i], group[j]]))
                     pairs.append(pair)
         
@@ -231,7 +231,7 @@ class FrameLevelCrossViewAssociator:
                                  pair: Tuple, 
                                  view_features: Dict) -> float:
         """
-        计算配对的特征相似度
+        Compute feature similarity for a pair.
         
         Args:
             pair: ((view1, tid1), (view2, tid2))
@@ -245,22 +245,22 @@ class FrameLevelCrossViewAssociator:
         view2, tid2 = key2
         
         if view1 not in view_features or view2 not in view_features:
-            return 1.0  # 默认权重
+            return 1.0  # default weight
         
         try:
-            # 获取特征
+            # get features
             feats1 = view_features[view1]  # (N1, C)
             feats2 = view_features[view2]  # (N2, C)
             
-            # 找到对应的特征
-            # 注意：这里tid是在detections列表中的索引
+            # locate matching features
+            # note: tid is index in detections list
             if tid1 >= len(feats1) or tid2 >= len(feats2):
                 return 1.0
             
             feat1 = feats1[tid1]  # (C,)
             feat2 = feats2[tid2]  # (C,)
             
-            # 计算余弦相似度
+            # cosine similarity
             feat1_np = feat1.cpu().numpy()
             feat2_np = feat2.cpu().numpy()
             
@@ -271,78 +271,78 @@ class FrameLevelCrossViewAssociator:
             return max(0, similarity)
             
         except Exception as e:
-            # 出错时返回默认权重
+            # on error, return default weight
             return 1.0
     
     def _rebuild_from_votes(self, pair_votes: Dict) -> Dict:
 
-        # 1. 过滤低票配对
+        # 1. filter low-vote pairs
         threshold = self.min_votes
         valid_pairs = [pair for pair, votes in pair_votes.items() 
                       if votes >= threshold]
         
-        # 2. 处理空数据情况
+        # 2. handle empty case
         if len(valid_pairs) == 0:
-            # 没有足够的投票，返回最新的关联
+            # insufficient votes: return latest associations
             if len(self.history) > 0:
                 return self.history[-1][1]
             else:
                 return {}
         
-        # 3. 准备并查集
+        # 3. prepare union-find
         from models.loss.matrix_loss import UnionFind
         
-        # 收集所有的key
+        # collect all keys
         all_keys = set()
         for pair in valid_pairs:
             all_keys.add(pair[0])
             all_keys.add(pair[1])
         
-        # 创建key到索引的映射 (用于并查集内部逻辑)
+        # key -> index mapping for union-find
         key_to_idx = {key: idx for idx, key in enumerate(all_keys)}
         idx_to_key = {idx: key for key, idx in key_to_idx.items()}
         
-        # 初始化并查集
+        # init union-find
         uf = UnionFind(len(all_keys))
         
-        # 4. 执行合并操作
+        # 4. merge pairs
         for pair in valid_pairs:
             idx1 = key_to_idx[pair[0]]
             idx2 = key_to_idx[pair[1]]
             uf.union(idx1, idx2)
         
-        # 5. 生成关联 (核心修改部分)
+        # 5. build associations (core logic)
         groups = uf.get_groups()
         associations = {}
         
-        # 遍历每一个并查集生成的组
+        # for each union-find group
         for group_indices in groups.values():
-            # 将索引转换回实际的 keys 列表
-            # 例如 cluster_keys = [('c001', 10), ('c002', 17), ('c004', 52)]
+            # map indices back to keys
+            # e.g. cluster_keys = [('c001', 10), ('c002', 17), ('c004', 52)]
             cluster_keys = [idx_to_key[idx] for idx in group_indices]
             
-            # --- 关键修改开始 ---
+            # --- key change start ---
             
-            # 找到该组中“最小”的 key。
-            # Python tuple 比较机制：先比 cam_id (string)，再比 track_id (int)。
-            # 这符合“最先出现的ID”逻辑，c001 会比 c002 小。
+            # find minimum key in the group.
+            # Tuple order: cam_id (str) then track_id (int).
+            # Matches earliest-ID logic; c001 < c002.
             leader_key = min(cluster_keys)
             
-            # 直接提取 leader_key 中的原始 ID 作为 Global ID
-            # 假设 key 的结构是 (camera_id, track_id)，取下标 1
-            # 这样 ('c001', 10) 所在的组，Global ID 就固定为 10
+            # use leader_key track_id as global ID
+            # key is (camera_id, track_id); take index 1
+            # e.g. group with ('c001', 10) gets global ID 10
             target_global_id = leader_key[1]
             
-            # 将该组内所有轨迹统一映射到这个 ID
+            # map all tracks in group to this ID
             for key in cluster_keys:
                 associations[key] = target_global_id
                 
-            # --- 关键修改结束 ---
+            # --- key change end ---
         
         return associations
     
     def reset(self):
-        """重置历史记录"""
+        """Reset history."""
         self.history = []
         self.prev_associations = None
 
@@ -351,10 +351,10 @@ def build_frame_level_associator(config: dict, neighbor_filter=None) -> FrameLev
 
     from models.cross_view_association import build_cross_view_associator
     
-    # 创建基础关联器（传递邻居筛选器）
+    # build base associator (with neighbor filter)
     base_associator = build_cross_view_associator(config, neighbor_filter=neighbor_filter)
     
-    # 创建帧级关联器
+    # build frame-level associator
     return FrameLevelCrossViewAssociator(
         base_associator=base_associator,
         voting_strategy=config.get("VOTING_STRATEGY", "sliding_window"),

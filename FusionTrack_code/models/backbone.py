@@ -40,7 +40,7 @@ class FrozenBatchNorm2d(nn.Module):
     def forward(self, x):
         # move reshapes to the beginning
         # to make it fuser-friendly
-        # 确保所有参数在同一设备上
+        # Ensure all parameters are on the same device
         w = self.weight.reshape(1, -1, 1, 1).to(x.device)
         b = self.bias.reshape(1, -1, 1, 1).to(x.device)
         rv = self.running_var.reshape(1, -1, 1, 1).to(x.device)
@@ -57,7 +57,7 @@ class Backbone(nn.Module):
     """
     def __init__(self, backbone_name: str, train_backbone: bool, return_interm_layers: bool):
         """
-        初始化一个 Backbone
+        Initialize a Backbone
 
         Args:
             backbone_name: backbone_name, only resnet50 is supported.
@@ -121,7 +121,7 @@ class BackboneWithPEVE(nn.Module):
             features: List of NestedTensor features
             pos_embeds: List of position embeddings (with view embedding if provided)
         """
-        backbone_outputs = self.backbone(ntensor)#三层特征图
+        backbone_outputs = self.backbone(ntensor)  # three-level feature maps
         features: List[NestedTensor] = list()
         pos_embeds: List[torch.Tensor] = list()
         # Image Features
@@ -131,12 +131,12 @@ class BackboneWithPEVE(nn.Module):
         for feature in features:
             pos_embed = self.position_embedding(feature)  # (B, 2*num_pos_feats, H, W)
             
-            # 添加视角编码
+            # Add view embedding
             if self.view_embedding is not None and view_ids is not None:
                 src, mask = feature.decompose()
                 H, W = src.shape[-2:]
                 view_embed = self.view_embedding(view_ids, (H, W))  # (B, embed_dim, H, W)
-                # 将视角编码加到position embedding中
+                # Add view embedding to position embedding
                 pos_embed = pos_embed + view_embed#[1,256,88,92],[1,256,44,46],[1,256,22,23]
             
             pos_embeds.append(pos_embed)
@@ -154,7 +154,7 @@ def build(config: dict) -> BackboneWithPEVE:
     position_embedding = build_position_embedding(config=config)
     backbone = Backbone(backbone_name=config["BACKBONE"], train_backbone=True, return_interm_layers=True)
     
-    # 如果配置了VIEW_POINT，添加视角编码
+    # Add view embedding when VIEW_POINT is configured
     view_embedding = None
     if config.get("VIEW_POINT") is not None and config.get("USE_VIEW_EMBEDDING", True):
         view_embedding = build_view_embedding(config=config)

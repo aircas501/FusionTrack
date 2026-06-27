@@ -47,19 +47,19 @@ class MUAVMotLazy(MOTDataset):
         self.uav_seqs_dir = os.path.join(config["DATA_ROOT"], config["DATASET"], "images", split)
         self.uav_gts_dir = os.path.join(config["DATA_ROOT"], config["DATASET"], "labels", split)
         
-        # 获取所有序列名并排序
+        # Get all sequence names and sort them
         self.uav_seq_names = [seq for seq in os.listdir(self.uav_seqs_dir) 
                               if os.path.isdir(os.path.join(self.uav_seqs_dir, seq))]
         self.uav_seq_names.sort()
         
         self.debug = config.get("DEBUG_DATASET", False)
         
-        # 1. 扫描文件路径
+        # 1. Scan file paths
         self.gt_file_paths = defaultdict(lambda: defaultdict(dict))
         
         if self.debug:
             import time
-            print(f"[DEBUG {time.strftime('%H:%M:%S')}] 🚀 开始扫描文件路径...")
+            print(f"[DEBUG {time.strftime('%H:%M:%S')}] Scanning file paths...")
             
         for scene_id in self.uav_seq_names:
             uav_gts_scene_dir = os.path.join(self.uav_gts_dir, scene_id)
@@ -75,12 +75,12 @@ class MUAVMotLazy(MOTDataset):
                             frame_t = int(entry.name.split('.')[0])
                             self.gt_file_paths[scene_id][view][frame_t] = entry.path
 
-        # 🔥 核心优化：缓存机制
+        # Core optimization: caching mechanism
         import json
         try:
             from tqdm import tqdm
         except ImportError:
-            # 如果没有tqdm，提供一个假的占位符
+            # Provide a no-op placeholder if tqdm is unavailable
             def tqdm(iterable, desc=""): return iterable
 
         cache_file = os.path.join(self.uav_gts_dir, f"uav_global_id_offsets_{split}.json")
@@ -90,22 +90,22 @@ class MUAVMotLazy(MOTDataset):
         
         cache_loaded = False
         
-        # 尝试读取缓存
+        # Try loading from cache
         if os.path.exists(cache_file):
             try:
-                print(f"[INFO] 发现 ID 映射缓存，正在加载: {cache_file}")
+                print(f"[INFO] Found ID mapping cache, loading: {cache_file}")
                 with open(cache_file, 'r') as f:
                     cache_data = json.load(f)
                     self.scene_offset_dict = cache_data['offsets']
                     self.total_num_classes = cache_data['total_classes']
-                print(f"[INFO] ✅ 缓存加载成功！Total IDs: {self.total_num_classes}")
+                print(f"[INFO] Cache loaded successfully. Total IDs: {self.total_num_classes}")
                 cache_loaded = True
             except Exception as e:
-                print(f"[WARN] 缓存加载失败，将重新扫描: {e}")
+                print(f"[WARN] Failed to load cache, will rescan: {e}")
         
-        # 如果没有缓存，则执行慢速扫描
+        # Perform full scan if cache is missing
         if not cache_loaded:
-            print(f"[INFO] 未找到缓存，正在全量扫描标注文件以计算 ID (首次运行较慢)...")
+            print(f"[INFO] No cache found, scanning all annotation files to compute IDs (first run is slower)...")
             
             pbar = tqdm(self.uav_seq_names, desc="Calculating Global IDs")
             
@@ -115,7 +115,7 @@ class MUAVMotLazy(MOTDataset):
                 
                 max_id_in_scene = -1
                 
-                # 扫描该场景的最大ID
+                # Scan max ID in this scene
                 if scene_id in self.gt_file_paths:
                     for view in self.gt_file_paths[scene_id]:
                         for gt_path in self.gt_file_paths[scene_id][view].values():
@@ -138,20 +138,20 @@ class MUAVMotLazy(MOTDataset):
                     if hasattr(pbar, 'set_postfix'):
                         pbar.set_postfix({"TotalIDs": self.total_num_classes})
             
-            # 扫描完成后，写入缓存
+            # Write cache after scan completes
             try:
                 with open(cache_file, 'w') as f:
                     json.dump({
                         'offsets': self.scene_offset_dict,
                         'total_classes': self.total_num_classes
                     }, f, indent=4)
-                print(f"[INFO] ✅ ID 映射计算完成并已保存至缓存: {cache_file}")
+                print(f"[INFO] ID mapping computed and saved to cache: {cache_file}")
             except Exception as e:
-                print(f"[WARN] 无法写入缓存文件: {e}")
+                print(f"[WARN] Failed to write cache file: {e}")
 
         print(f"✅ Final Global Classes (NUM_CLASSES): {self.total_num_classes}")
         
-        # 缓存配置
+        # Cache configuration
         self._gt_cache = {}
         self._cache_max_size = config.get("GT_CACHE_SIZE", 2000) 
         
@@ -159,15 +159,15 @@ class MUAVMotLazy(MOTDataset):
     
     def _read_gt_file(self, gt_path: str) -> list:
         """
-        惰性读取单个标注文件（带LRU缓存）
-        返回: 原始数据的列表 [[class_id, track_id, x_norm, y_norm, w_norm, h_norm], ...]
-        注意：这里返回的是 Local ID，偏移量在 get_single_frame 中应用
+        Lazily read a single annotation file (with LRU cache).
+        Returns: list of raw rows [[class_id, track_id, x_norm, y_norm, w_norm, h_norm], ...]
+        Note: returns Local IDs; offset is applied in get_single_frame.
         """
-        # 缓存命中
+        # Cache hit
         if gt_path in self._gt_cache:
             return self._gt_cache[gt_path]
         
-        # 读取文件
+        # Read file
         gts = []
         try:
             with open(gt_path) as f:
@@ -179,11 +179,11 @@ class MUAVMotLazy(MOTDataset):
                     try:
                         parts = line.split()
                         if len(parts) == 6:
-                            # YOLO MOT格式（6列）: class_id track_id x y w h
+                            # YOLO MOT format (6 columns): class_id track_id x y w h
                             cls, i, x, y, w, h = parts
                             cls = int(cls)
                         elif len(parts) == 5:
-                            # 兼容旧格式（5列）: track_id x y w h
+                            # Legacy format (5 columns): track_id x y w h
                             i, x, y, w, h = parts
                             cls = 0
                         else:
@@ -196,19 +196,19 @@ class MUAVMotLazy(MOTDataset):
                         continue
         except Exception as e:
             if self.debug:
-                print(f"[ERROR] 读取标注文件失败: {gt_path}, {e}")
+                print(f"[ERROR] Failed to read annotation file: {gt_path}, {e}")
             return []
         
-        # 缓存管理（LRU简化版：满了就清空）
+        # Cache management (simplified LRU: clear when full)
         if len(self._gt_cache) >= self._cache_max_size:
-            # if self.debug: print(f"[DEBUG] 缓存已满 ({self._cache_max_size})，清空缓存")
+            # if self.debug: print(f"[DEBUG] Cache full ({self._cache_max_size}), clearing cache")
             self._gt_cache.clear()
         
         self._gt_cache[gt_path] = gts
         return gts
     
     def get_single_frame(self, frame_path: str):
-        """实时读取标注（按需加载）并应用 Global ID Offset"""
+        """Read annotations on demand and apply Global ID offset."""
         if "UAV_V" not in frame_path:
             raise RuntimeError(f"Frame path '{frame_path}' is not from UAV_V dataset")
         
@@ -216,22 +216,22 @@ class MUAVMotLazy(MOTDataset):
         view = frame_path.split("/")[-2]
         scene_id = frame_path.split("/")[-3]
         
-        # 检查文件路径是否存在
+        # Check whether file path exists
         if scene_id not in self.gt_file_paths or view not in self.gt_file_paths[scene_id]:
             raise KeyError(f"Scene '{scene_id}' or view '{view}' not found")
         
-        # 获取当前场景的 ID 偏移量
+        # Get ID offset for the current scene
         scene_offset = self.scene_offset_dict.get(scene_id, 0)
         
         if frame_idx not in self.gt_file_paths[scene_id][view]:
-            # 空帧（无目标）
+            # Empty frame (no targets)
             gt = []
         else:
-            # ✅ 惰性加载：此时才读取标注文件
+            # Lazy load: read annotation file here
             gt_path = self.gt_file_paths[scene_id][view][frame_idx]
             gt = self._read_gt_file(gt_path)
         
-        # 打开图像
+        # Open image
         img = Image.open(frame_path)
         size_w, size_h = img.size
         
@@ -243,9 +243,9 @@ class MUAVMotLazy(MOTDataset):
             "dataset": "UAV_V"
         }
         
-        # 转换归一化坐标为绝对坐标，并应用 ID 偏移
+        # Convert normalized coords to absolute coords and apply ID offset
         for cls, i, x_norm, y_norm, w_norm, h_norm in gt:
-            # 🔥 [修改 3] 应用全局 ID 偏移
+            # Apply global ID offset
             track_id = i
             if track_id >= 0:
                 track_id += scene_offset
@@ -257,7 +257,7 @@ class MUAVMotLazy(MOTDataset):
             
             info["boxes"].append([float(x_abs), float(y_abs), float(w_abs), float(h_abs)])
             info["area"].append(w_abs * h_abs)
-            info["obj_ids"].append(track_id) # 存储 Global ID
+            info["obj_ids"].append(track_id) # Store Global ID
             info["labels"].append(cls)
         
         info["boxes"] = torch.as_tensor(info["boxes"])
@@ -276,10 +276,10 @@ class MUAVMotLazy(MOTDataset):
         return img, info
     
     def set_epoch(self, epoch: int):
-        """设置Epoch，生成采样路径"""
+        """Set epoch and generate sampling paths."""
         if self.debug:
             import time
-            print(f"[DEBUG {time.strftime('%H:%M:%S')}] set_epoch({epoch}) 开始")
+            print(f"[DEBUG {time.strftime('%H:%M:%S')}] set_epoch({epoch}) started")
         
         if self.sampler_steps is not None and len(self.sampler_steps) > 0:
             assert len(self.sample_lengths) == len(self.sampler_steps) + 1
@@ -323,7 +323,7 @@ class MUAVMotLazy(MOTDataset):
         
         if self.debug:
             import time
-            print(f"[DEBUG {time.strftime('%H:%M:%S')}] set_epoch({epoch}) 完成，生成采样路径数: {sum(len(v) for v in self.sample_begin_frame_paths.values())}")
+            print(f"[DEBUG {time.strftime('%H:%M:%S')}] set_epoch({epoch}) done, sampling paths: {sum(len(v) for v in self.sample_begin_frame_paths.values())}")
         
         return
     
@@ -421,7 +421,7 @@ class MUAVMotLazy(MOTDataset):
         return len(list(self.sample_begin_frame_paths.values())[0])
 
 
-# ==================== Transform 和 Build 函数 ====================
+# ==================== Transform and build functions ====================
 
 def make_transforms_for_uav(image_set, config=None):
     coco_size = config["COCO_SIZE"]
@@ -475,7 +475,7 @@ def build_dataset2transform(image_set, config=None):
 
 def build(config, split):
     """
-    构建惰性加载版本的UAV数据集
+    Build the lazy-loading UAV dataset.
     """
     dataset2transform = build_dataset2transform(split, config)
     if split == 'train':
@@ -484,5 +484,5 @@ def build(config, split):
             split=split,
             transform=dataset2transform
         )
-    # 其他split可以根据需要扩展
+    # Other splits can be added as needed
     raise NotImplementedError(f"Split '{split}' not implemented for lazy loading yet")

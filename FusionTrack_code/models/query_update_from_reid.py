@@ -8,7 +8,7 @@ def update_query_with_reid_features(tracks: Any,
                                       reid_update_weight: float = 0.1,
                                       use_dab: bool = True) -> Any:
 
-    # 支持列表格式
+    # support list format
     is_list = isinstance(tracks, list)
     if is_list:
         if len(tracks) == 0:
@@ -24,7 +24,7 @@ def update_query_with_reid_features(tracks: Any,
     device = query_embed.device
     hidden_dim = query_embed.shape[-1] if use_dab else query_embed.shape[-1] // 2
     
-    # 提取当前query特征
+    # extract current query features
     if use_dab:
         current_feats = query_embed  # (N, H)
     else:
@@ -37,26 +37,26 @@ def update_query_with_reid_features(tracks: Any,
         tid = int(ids[i].item())
         current_feat = current_feats[i]  # (H,)
         
-        # 无效ID或reid_features中没有该ID的特征，保持不变
+        # invalid ID or missing ReID feature: unchanged
         if tid < 0 or tid not in reid_features:
             updated_feats.append(current_feat)
             continue
         
-        # 从reid_features获取该ID的ReID特征
+        # ReID feature for this ID from reid_features
         reid_feat = reid_features[tid]
         
         if reid_feat is None:
             updated_feats.append(current_feat)
             continue
         
-        # 转换到正确的设备和dtype
+        # move to correct device and dtype
         reid_feat_tensor = reid_feat.to(device)
         if reid_feat_tensor.dim() > 1:
             reid_feat_tensor = reid_feat_tensor.squeeze(0)
         
-        # 如果维度不匹配，需要处理
+        # handle dimension mismatch
         if reid_feat_tensor.shape[-1] != hidden_dim:
-            # 简单的截断或padding
+            # simple truncate or pad
             if reid_feat_tensor.shape[-1] > hidden_dim:
                 reid_feat_tensor = reid_feat_tensor[:hidden_dim]
             else:
@@ -65,18 +65,18 @@ def update_query_with_reid_features(tracks: Any,
                                     device=device, dtype=reid_feat_tensor.dtype)
                 reid_feat_tensor = torch.cat([reid_feat_tensor, padding], dim=0)
         
-        # 加权融合：new_feat = (1 - w) * current_feat + w * reid_feat
+        # weighted fusion: new_feat = (1 - w) * current_feat + w * reid_feat
         updated_feat = (1 - reid_update_weight) * current_feat + reid_update_weight * reid_feat_tensor
         updated_feats.append(updated_feat)
         update_count += 1
     
-    # 重新组装query_embed（原地修改）
+    # Reassemble query_embed (in-place)
     updated_feats_tensor = torch.stack(updated_feats, dim=0).to(device)  # (N, H)
     
     if use_dab:
         tracks.query_embed = updated_feats_tensor
     else:
-        # 保留pos部分，只更新feat部分
+        # Keep original pos part; update feat part only
         pos_part = query_embed[:, :hidden_dim]
         tracks.query_embed = torch.cat([pos_part, updated_feats_tensor], dim=-1)
     
@@ -89,7 +89,7 @@ def update_query_from_reid_pool(tracks: Any,
                                   reid_update_weight: float = 0.3,
                                   use_dab: bool = True) -> Any:
 
-    # 支持列表格式
+    # support list format
     is_list = isinstance(tracks, list)
     if is_list:
         if len(tracks) == 0:
@@ -105,7 +105,7 @@ def update_query_from_reid_pool(tracks: Any,
     device = query_embed.device
     hidden_dim = query_embed.shape[-1] if use_dab else query_embed.shape[-1] // 2
     
-    # 获取ReIDPool中的特征字典
+    # feature dict from ReIDPool
     if not hasattr(reid_pool, 'view_id_reid_feat_dict_list'):
         return [tracks] if is_list else tracks
     
@@ -113,7 +113,7 @@ def update_query_from_reid_pool(tracks: Any,
     if len(view_pool) == 0:
         return [tracks] if is_list else tracks
     
-    # 提取当前query特征
+    # extract current query features
     if use_dab:
         current_feats = query_embed  # (N, H)
     else:
@@ -125,26 +125,26 @@ def update_query_from_reid_pool(tracks: Any,
         tid = int(ids[i].item())
         current_feat = current_feats[i]  # (H,)
         
-        # 无效ID或ReIDPool中没有该ID的特征，保持不变
+        # invalid ID or missing in ReIDPool: unchanged
         if tid < 0 or tid not in view_pool:
             updated_feats.append(current_feat)
             continue
         
-        # 从ReIDPool获取该ID的ReID特征（可能是多帧的均值）
+        # ReID feature from pool (may be multi-frame mean)
         reid_feat = view_pool[tid]
         
         if reid_feat is None:
             updated_feats.append(current_feat)
             continue
         
-        # 转换到正确的设备和dtype
+        # move to correct device and dtype
         reid_feat_tensor = reid_feat.to(device)
         if reid_feat_tensor.dim() > 1:
             reid_feat_tensor = reid_feat_tensor.squeeze(0)
         
-        # 如果维度不匹配，需要投影（通常ReID特征维度和query维度相同）
+        # Project if dimensions do not match (usually same as query dim)
         if reid_feat_tensor.shape[-1] != hidden_dim:
-            # 简单的线性插值或截断（更好的方式是用投影层，但这里简化处理）
+            # simple truncate/pad (projection layer would be better)
             if reid_feat_tensor.shape[-1] > hidden_dim:
                 reid_feat_tensor = reid_feat_tensor[:hidden_dim]
             else:
@@ -152,17 +152,17 @@ def update_query_from_reid_pool(tracks: Any,
                 padding = torch.zeros(hidden_dim - reid_feat_tensor.shape[-1], device=device, dtype=reid_feat_tensor.dtype)
                 reid_feat_tensor = torch.cat([reid_feat_tensor, padding], dim=0)
         
-        # 加权融合：new_feat = (1 - w) * current_feat + w * reid_feat
+        # weighted fusion: new_feat = (1 - w) * current_feat + w * reid_feat
         updated_feat = (1 - reid_update_weight) * current_feat + reid_update_weight * reid_feat_tensor
         updated_feats.append(updated_feat)
     
-    # 重新组装query_embed
+    # Reassemble query_embed
     updated_feats_tensor = torch.stack(updated_feats, dim=0).to(device)  # (N, H)
     
     if use_dab:
         tracks.query_embed = updated_feats_tensor
     else:
-        # 保留pos部分，只更新feat部分
+        # Keep original pos part; update feat part only
         pos_part = query_embed[:, :hidden_dim]
         tracks.query_embed = torch.cat([pos_part, updated_feats_tensor], dim=-1)
     
@@ -177,7 +177,7 @@ def update_query_from_memory_bank(tracks: Any,
                                     use_dab: bool = True,
                                     max_history_frames: int = 5) -> Any:
 
-    # 支持列表格式
+    # support list format
     is_list = isinstance(tracks, list)
     if is_list:
         if len(tracks) == 0:
@@ -193,7 +193,7 @@ def update_query_from_memory_bank(tracks: Any,
     device = query_embed.device
     hidden_dim = query_embed.shape[-1] if use_dab else query_embed.shape[-1] // 2
     
-    # 提取当前query特征
+    # extract current query features
     if use_dab:
         current_feats = query_embed  # (N, H)
     else:
@@ -209,14 +209,14 @@ def update_query_from_memory_bank(tracks: Any,
             updated_feats.append(current_feat)
             continue
         
-        # 从MemoryBank获取该ID的历史序列
+        # historical sequence for this ID from MemoryBank
         history_seq = memory_bank.gather_seq(view, tid, k=max_history_frames)
         
         if len(history_seq) == 0:
             updated_feats.append(current_feat)
             continue
         
-        # 收集历史特征（简单平均）
+        # collect historical features (simple average)
         history_feats = []
         for rec in history_seq:
             if rec.get("feat") is not None:
@@ -229,14 +229,14 @@ def update_query_from_memory_bank(tracks: Any,
             updated_feats.append(current_feat)
             continue
         
-        # 计算历史特征的均值
+        # mean of historical features
         history_feat_mean = torch.stack(history_feats, dim=0).mean(dim=0)  # (H,)
         
-        # 加权融合
+        # weighted fusion
         updated_feat = (1 - reid_update_weight) * current_feat + reid_update_weight * history_feat_mean
         updated_feats.append(updated_feat)
     
-    # 重新组装query_embed
+    # Reassemble query_embed
     updated_feats_tensor = torch.stack(updated_feats, dim=0).to(device)  # (N, H)
     
     if use_dab:

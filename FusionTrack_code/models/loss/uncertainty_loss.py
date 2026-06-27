@@ -5,38 +5,38 @@ import torch.nn as nn
 
 class UncertaintyWeightedLoss(nn.Module):
     """
-    不确定性加权损失模块
-    
-    使用可学习参数ω1和ω2来动态平衡Tracking和ReID任务的损失
+    Uncertainty-weighted loss module.
+
+    Uses learnable parameters omega1 and omega2 to dynamically balance Tracking and ReID losses.
     """
     def __init__(self, 
                  init_omega1: float = -1.85,
                  init_omega2: float = -1.05):
         """
         Args:
-            init_omega1: ω1的初始值（用于Tracking损失）
-            init_omega2: ω2的初始值（用于ReID损失）
+            init_omega1: Initial value of omega1 (for Tracking loss)
+            init_omega2: Initial value of omega2 (for ReID loss)
         """
         super(UncertaintyWeightedLoss, self).__init__()
         
-        # 可学习参数
+        # Learnable parameters
         self.omega1 = nn.Parameter(torch.tensor(init_omega1, dtype=torch.float32))
         self.omega2 = nn.Parameter(torch.tensor(init_omega2, dtype=torch.float32))
     
     def forward(self, tracking_loss: torch.Tensor, reid_loss: torch.Tensor):
         """
-        计算不确定性加权损失
-        
+        Compute uncertainty-weighted loss.
+
         Args:
-            tracking_loss: Tracking损失 L_T (scalar tensor)
-            reid_loss: ReID损失 L_R (scalar tensor)
-        
+            tracking_loss: Tracking loss L_T (scalar tensor)
+            reid_loss: ReID loss L_R (scalar tensor)
+
         Returns:
-            total_loss: 加权后的总损失 (scalar tensor)
-            loss_dict: 包含各项损失的字典
+            total_loss: Weighted total loss (scalar tensor)
+            loss_dict: Dict containing individual loss terms
         """
-        # 计算加权损失
-        # L_total = 0.5 * (e^(-ω1) * L_T + e^(-ω2) * L_R + ω1 + ω2)
+        # Compute weighted loss
+        # L_total = 0.5 * (e^(-omega1) * L_T + e^(-omega2) * L_R + omega1 + omega2)
         weighted_tracking = torch.exp(-self.omega1) * tracking_loss
         weighted_reid = torch.exp(-self.omega2) * reid_loss
         regularization = self.omega1 + self.omega2
@@ -58,33 +58,32 @@ class UncertaintyWeightedLoss(nn.Module):
     
     def get_weights(self):
         """
-        获取当前的权重值
-        
+        Get current weight values.
+
         Returns:
-            dict: 包含ω1, ω2, w1=exp(-ω1), w2=exp(-ω2)的字典
+            dict: Contains omega1, omega2, w1=exp(-omega1), w2=exp(-omega2)
         """
         return {
             'omega1': self.omega1.item(),
             'omega2': self.omega2.item(),
-            'weight1': torch.exp(-self.omega1).item(),  # e^(-ω1)
-            'weight2': torch.exp(-self.omega2).item(),   # e^(-ω2)
+            'weight1': torch.exp(-self.omega1).item(),  # e^(-omega1)
+            'weight2': torch.exp(-self.omega2).item(),   # e^(-omega2)
         }
 
 
 def build_uncertainty_loss(config: dict):
     """
-    构建不确定性加权损失模块
-    
+    Build uncertainty-weighted loss module.
+
     Args:
-        config: 配置字典，需要包含：
-            - UNCERTAINTY_OMEGA1_INIT: ω1初始值（可选，默认-1.85）
-            - UNCERTAINTY_OMEGA2_INIT: ω2初始值（可选，默认-1.05）
-    
+        config: Config dict containing:
+            - UNCERTAINTY_OMEGA1_INIT: initial omega1 (optional, default -1.85)
+            - UNCERTAINTY_OMEGA2_INIT: initial omega2 (optional, default -1.05)
+
     Returns:
-        UncertaintyWeightedLoss实例
+        UncertaintyWeightedLoss instance
     """
     init_omega1 = config.get("UNCERTAINTY_OMEGA1_INIT", -1.85)
     init_omega2 = config.get("UNCERTAINTY_OMEGA2_INIT", -1.05)
     
     return UncertaintyWeightedLoss(init_omega1=init_omega1, init_omega2=init_omega2)
-

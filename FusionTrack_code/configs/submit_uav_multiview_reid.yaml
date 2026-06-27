@@ -1,37 +1,37 @@
 # ========================================
-# 支持MemoryBank、ReID模型、跨视角关联
+# Supports MemoryBank, ReID model, cross-view association
 # ========================================
 
 # ========================================
-# 基础配置
+# Basic configuration
 # ========================================
 GIT_VERSION:
-MODE: submit  # 推理模式
+MODE: submit  # Inference mode
 CONFIG_PATH:
 VISUALIZE: False
-AVAILABLE_GPUS: '2'  # 推理通常只用一张GPU
+AVAILABLE_GPUS: '2'  # Inference typically uses a single GPU
 DEVICE: cuda
-USE_DISTRIBUTED: False  # 推理时不需要分布式（除非数据集特别大）
+USE_DISTRIBUTED: False  # Distributed mode not needed for inference (unless dataset is very large)
 USE_CHECKPOINT: True
 
 # ========================================
-# 推理输出配置
+# Inference output configuration
 # ========================================
-SUBMIT_DIR: /xxxx/MeMOTR-main/outputs/uav_multiview_reid  # 训练输出目录（包含模型权重）
-SUBMIT_MODEL1: model_checkpoint.pth  # 主模型权重文件名
-SUBMIT_MODEL2: reid_checkpoint.pth   # ReID模型权重文件名
-SUBMIT_DATA_SPLIT: test # 推理数据集: 'test' 或 'val'
+SUBMIT_DIR: /xxxx/MeMOTR-main/outputs/uav_multiview_reid  # Training output directory (contains model weights)
+SUBMIT_MODEL1: model_checkpoint.pth  # Main model weight filename
+SUBMIT_MODEL2: reid_checkpoint.pth   # ReID model weight filename
+SUBMIT_DATA_SPLIT: test # Inference dataset split: 'test' or 'val'
 
 # ========================================
-# 数据集配置
+# Dataset configuration
 # ========================================
 DATASET: UAV_V
 DATA_ROOT: /xxx/MeMOTR-main/dataset
-NUM_WORKERS: 4  # 推理时可以用较少的worker
-VIEW_POINT: 5  # 视角数量（必须与训练时一致）
+NUM_WORKERS: 4  # Fewer workers are sufficient for inference
+VIEW_POINT: 5  # Number of viewpoints (must match training)
 
 # ========================================
-# 模型配置（必须与训练时完全一致）
+# Model configuration (must match training exactly)
 # ========================================
 BACKBONE: resnet50
 HIDDEN_DIM: 256
@@ -53,17 +53,17 @@ LONG_MEMORY_LAMBDA: 0.01
 NUM_DET_QUERIES: 300
 
 # ========================================
-# ReID模型配置（必须与训练时完全一致）
+# ReID model configuration (must match training exactly)
 # ========================================
 REID_MODEL: Transformer
 REID_LOSS: True  
 
-# ReID模型选择（必须与训练时一致）
-USE_SIMPLE_REID: False # 与训练配置一致
+# ReID model selection (must match training)
+USE_SIMPLE_REID: False # Must match training config
 REID_MLP_LAYERS: 2
 REID_DROPOUT: 0.1
 
-# Transformer ReID模型配置（保留以兼容）
+# Transformer ReID model configuration (kept for compatibility)
 QUERY_DIM: 256
 EMBED_DIM: 256
 NUM_REID: 1620
@@ -71,82 +71,81 @@ NUM_CLASS: 1620
 REID_USE_TRANSFORMER: False
 REID_TRANSFORMER_LAYERS: 2
 
-# ReID分类头配置（保留以兼容）
+# ReID classification head configuration (kept for compatibility)
 ID_LOSS_TYPE: 'arcface'
 COSINE_SCALE: 30.0
 COSINE_MARGIN: 0.5
 NECK: 'bnneck'
 NECK_FEAT: 'after'
 
-# ReID Pool配置
-MAX_FORGET_LENGTH: 3000  # ⭐ ReIDPool历史长度
+# ReID Pool configuration
+MAX_FORGET_LENGTH: 3000  # ReIDPool history length
 KEEP_ALL_BATCH_REID: True
 REID_UPDATE_WEIGHT: 0.8
 
 # ========================================
-# MemoryBank配置
+# MemoryBank configuration
 # ========================================
-MEMORY_BANK_LEN: 30  # 推理时限制存储长度，避免内存溢出
-TEMPORAL_K: 5  # 时序更新的历史帧数
-DECAY_ALPHA: 0.25  # 时序衰减系数
-REID_UPDATE_WEIGHT: 0.1  # ReID特征更新权重
+MEMORY_BANK_LEN: 30  # Limit stored length during inference to avoid OOM
+TEMPORAL_K: 5  # Number of historical frames for temporal update
+DECAY_ALPHA: 0.25  # Temporal decay coefficient
+REID_UPDATE_WEIGHT: 0.1  # ReID feature update weight
 
-# Query更新配置（跨帧和跨视角）
+# Query update configuration (cross-frame and cross-view)
 
-ENABLE_CROSS_FRAME_UPDATE: True  # 启用跨帧query更新
-ENABLE_CROSS_VIEW_UPDATE: False  # 禁用跨视角query更新（需要先关联才知道同一ID）
-MEMORY_TAU_FRAMES: 5  # 使用最近5帧进行跨帧更新
-MEMORY_TIME_DECAY_ALPHA: 0.1  # 时间衰减系数
+ENABLE_CROSS_FRAME_UPDATE: True  # Enable cross-frame query update
+ENABLE_CROSS_VIEW_UPDATE: False  # Disable cross-view query update (association is required first to know same ID)
+MEMORY_TAU_FRAMES: 5  # Use the most recent 5 frames for cross-frame update
+MEMORY_TIME_DECAY_ALPHA: 0.1  # Time decay coefficient
 
-# 推理时关联后的query更新
-USE_REID_QUERY_UPDATE: True  # 是否在关联后使用ReID特征更新query（用于下一帧）
-REID_UPDATE_WEIGHT: 0.1  # ReID特征更新权重
-
-# ========================================
-# 推理特定参数
-# ========================================
-# 检测和跟踪阈值
-DET_SCORE_THRESH: 0.5     # 检测阈值（可以调低以增加召回率）
-TRACK_SCORE_THRESH: 0.5   # 跟踪阈值
-RESULT_SCORE_THRESH: 0.5  # 最终输出结果的阈值
-
-# 目标丢失容忍度
-MISS_TOLERANCE: 30  # 目标消失多少帧后删除（可以调高以处理遮挡）
-
-# 运动预测（可选）
-USE_MOTION: False          # 是否使用运动预测
-MOTION_MIN_LENGTH: 3      # 运动历史最小长度
-MOTION_MAX_LENGTH: 10     # 运动历史最大长度
-MOTION_LAMBDA: 0.5        # 运动预测权重
+# Query update after association during inference
+USE_REID_QUERY_UPDATE: True  # Whether to update query with ReID features after association (for next frame)
+REID_UPDATE_WEIGHT: 0.1  # ReID feature update weight
 
 # ========================================
-# NMS去重配置（DETR-like架构通常不需要）
+# Inference-specific parameters
 # ========================================
-# 原始论文和代码中没有使用NMS，建议保持关闭
-USE_NMS: False             # 是否启用NMS去重（默认False，通常不需要）
-NMS_IOU_THRESHOLD: 0.7     # NMS的IoU阈值（仅当USE_NMS=True时生效）
+# Detection and tracking thresholds
+DET_SCORE_THRESH: 0.5     # Detection threshold (can be lowered to increase recall)
+TRACK_SCORE_THRESH: 0.5   # Tracking threshold
+RESULT_SCORE_THRESH: 0.5  # Final output score threshold
+
+# Target loss tolerance
+MISS_TOLERANCE: 30  # Frames before deleting a lost target (can be increased for occlusion)
+
+# Motion prediction (optional)
+USE_MOTION: False          # Whether to use motion prediction
+MOTION_MIN_LENGTH: 3      # Minimum motion history length
+MOTION_MAX_LENGTH: 10     # Maximum motion history length
+MOTION_LAMBDA: 0.5        # Motion prediction weight
 
 # ========================================
-# 视角ID偏移配置（跨视角关联）
+# NMS deduplication configuration (usually not needed for DETR-like architectures)
 # ========================================
-USE_VIEW_ID_OFFSET: False  # 视角ID偏移
-VIEW_ID_OFFSET: 0          # 偏移量（不使用时设为0）
+# Original paper and code do not use NMS; keep disabled by default
+USE_NMS: False             # Whether to enable NMS deduplication (default False, usually not needed)
+NMS_IOU_THRESHOLD: 0.7     # NMS IoU threshold (only effective when USE_NMS=True)
 
-WINDOW_SIZE: 10  # 投票窗口大小（帧级投票）
-MIN_VOTES: 7    # 最小投票数
+# ========================================
+# View ID offset configuration (cross-view association)
+# ========================================
+USE_VIEW_ID_OFFSET: False  # View ID offset
+VIEW_ID_OFFSET: 0          # Offset value (set to 0 when unused)
 
-# ⭐ 跨视角关联的核心配置
+WINDOW_SIZE: 10  # Voting window size (frame-level voting)
+MIN_VOTES: 7    # Minimum vote count
+
+# Core cross-view association configuration
 CROSS_VIEW_THRESHOLD: 0.5 
-CROSS_VIEW_DISTANCE: euclidean  # 度量距离
+CROSS_VIEW_DISTANCE: euclidean  # Distance metric
 
 
 CACHE_IMAGES: False  
 
-# 邻居筛选机制
-USE_NEIGHBOR_FILTER: True  # 是否启用邻居筛选
-NEIGHBOR_SPATIAL_RADIUS: 100  # 空间邻域半径（像素），以目标中心为圆心画圆
-NEIGHBOR_K_TOP: 6  # 对于每个邻居，考虑相似度最高的前K个匹配
-NEIGHBOR_MIN_MATCH_RATIO: 0.5  # 最小邻居匹配比例（低于此值拒绝关联）
-NEIGHBOR_SIM_THRESHOLD: 0.6  # 邻居间相似度阈值
-NEIGHBOR_DISTANCE_METRIC: "cosine"  # 距离度量：cosine, euclidean
-
+# Neighbor filtering mechanism
+USE_NEIGHBOR_FILTER: True  # Whether to enable neighbor filtering
+NEIGHBOR_SPATIAL_RADIUS: 100  # Spatial neighborhood radius (pixels), circle centered on target
+NEIGHBOR_K_TOP: 6  # For each neighbor, consider top-K matches by similarity
+NEIGHBOR_MIN_MATCH_RATIO: 0.5  # Minimum neighbor match ratio (reject association below this)
+NEIGHBOR_SIM_THRESHOLD: 0.6  # Similarity threshold between neighbors
+NEIGHBOR_DISTANCE_METRIC: "cosine"  # Distance metric: cosine, euclidean

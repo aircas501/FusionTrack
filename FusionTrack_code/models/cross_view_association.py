@@ -30,7 +30,7 @@ class CrossViewAssociator:
                   view_bboxes: Optional[Dict[str, torch.Tensor]] = None) -> Dict[Tuple[str, int], int]:
         import time
 
-        # 1. 构建全局特征矩阵和索引映射
+        # 1. Build global feature matrix and index mapping
         all_features, idx_to_view_id, view_idx_bounds = self._build_global_matrix(
             view_features, view_ids, view_names
         )
@@ -38,14 +38,14 @@ class CrossViewAssociator:
         if len(all_features) == 0:
             return {}
         
-        # 2. 计算距离矩阵
+        # 2. Compute distance matrix
         dist_matrix = self._compute_distance_matrix(all_features)
         #print("assosication 68" + str(time.perf_counter()))        
-        # 3. 根据策略进行关联
+        # 3. Associate per strategy
         if self.strategy == "pairwise_hungarian":
             matches = self._pairwise_hungarian_matching(
                 dist_matrix, view_idx_bounds, view_names,
-                view_features, view_ids, view_bboxes  # 传递邻居筛选所需参数
+                view_features, view_ids, view_bboxes  # params for neighbor filter
             )
         elif self.strategy == "hierarchical_clustering":
             matches = self._hierarchical_clustering(
@@ -58,7 +58,7 @@ class CrossViewAssociator:
         else:
             raise ValueError(f"Unknown strategy: {self.strategy}")
         #print("assosication 85" + str(time.perf_counter()))        
-        # 4. 生成全局ID映射
+        # 4. Build global ID mapping
         mapping = self._generate_global_mapping(
             matches, idx_to_view_id, view_names
         )
@@ -83,7 +83,7 @@ class CrossViewAssociator:
             features = view_features[view_name]  # (N_view, C)
             ids = view_ids[view_name]
             
-            # 确保特征是2D
+            # ensure features are 2D
             if features.dim() == 1:
                 features = features.unsqueeze(0)
             elif features.dim() > 2:
@@ -103,7 +103,7 @@ class CrossViewAssociator:
         
         all_features = torch.stack(all_features, dim=0)  # (N_total, C)
         
-        # 归一化
+        # normalize
         if self.normalize_features:
             all_features = normalize(all_features, axis=-1)
         
@@ -111,13 +111,13 @@ class CrossViewAssociator:
     
     def _compute_distance_matrix(self, features: torch.Tensor) -> np.ndarray:
         """
-        计算距离矩阵
+        Compute distance matrix.
         
         Args:
-            features: (N, C) 特征矩阵
+            features: (N, C) feature matrix
             
         Returns:
-            dist_matrix: (N, N) numpy数组
+            dist_matrix: (N, N) numpy array
         """
         if self.distance_metric == "euclidean":
             dist_matrix = euclidean_dist(features, features)
@@ -140,12 +140,12 @@ class CrossViewAssociator:
         n_total = dist_matrix.shape[0]
         uf = UnionFind(n_total)
         
-        # 计算视角起始索引
+        # compute per-view start indices
         view_start_indices = [0]
         for count in view_idx_bounds[:-1]:
             view_start_indices.append(view_start_indices[-1] + count)
         
-        # 统计邻居筛选信息（用于调试）
+        # neighbor-filter stats (debug)
         neighbor_filter_stats = {
             "total_pairs_before_filter": 0,
             "total_pairs_after_filter": 0,
@@ -153,14 +153,14 @@ class CrossViewAssociator:
             "rejection_details": []
         }
         
-        # 两两视角间进行匈牙利匹配
+        # Hungarian matching between view pairs
         n_views = len(view_idx_bounds)
         for i in range(n_views):
             for j in range(i + 1, n_views):
                 if view_idx_bounds[i] == 0 or view_idx_bounds[j] == 0:
                     continue
                 
-                # 提取两个视角间的距离子矩阵
+                # extract sub-matrix between two views
                 start_i = view_start_indices[i]
                 end_i = start_i + view_idx_bounds[i]
                 start_j = view_start_indices[j]
@@ -168,35 +168,35 @@ class CrossViewAssociator:
                 
                 sub_matrix = dist_matrix[start_i:end_i, start_j:end_j].copy()
                 
-                # 超过阈值的设为无穷大
+                # set distances above threshold to inf
                 sub_matrix[sub_matrix > self.threshold] = 1e9
                 
-                # 如果所有距离都超过阈值，跳过
+                # skip if all distances exceed threshold
                 if np.all(sub_matrix >= 1e9):
                     continue
                 
-                # 匈牙利算法求解最优匹配
+                # Hungarian algorithm for optimal matching
                 #print("ph 215" + str(time.perf_counter()))
 
                 row_ind, col_ind = linear_sum_assignment(sub_matrix)
                 #print("ph 218" + str(time.perf_counter()))
                 
-                # ==================== 应用邻居筛选 ====================
-                # 收集通过阈值和TopK约束的候选配对
+                # ==================== Apply neighbor filter ====================
+                # collect candidate pairs passing threshold and TopK
                 candidate_pairs = []
                 for r, c in zip(row_ind, col_ind):
                     real_r = start_i + r
                     real_c = start_j + c
                     
                     if dist_matrix[real_r, real_c] <= self.threshold:
-                        # 转换为视角内的局部索引（相对于每个视角的起始）
+                        # convert to view-local indices
                         candidate_pairs.append((r, c))
                 
                 neighbor_filter_stats["total_pairs_before_filter"] += len(candidate_pairs)
                 
-                # 应用邻居筛选
+                # apply neighbor filter
                 if self.neighbor_filter is not None and view_features is not None and view_bboxes is not None:
-                    # 准备当前两个视角的数据
+                    # prepare data for the two views
                     view1_name = view_names[i]
                     view2_name = view_names[j]
                     
@@ -208,7 +208,7 @@ class CrossViewAssociator:
                         view1_bboxes = view_bboxes.get(view1_name, None)
                         view2_bboxes = view_bboxes.get(view2_name, None)
                         
-                        # 调用邻居筛选
+                        # invoke neighbor filter
                         filtered_pairs, rejection_reasons = self.neighbor_filter.filter_association(
                             candidate_pairs=candidate_pairs,
                             view1_features=view1_features,
@@ -219,7 +219,7 @@ class CrossViewAssociator:
                             view2_bboxes=view2_bboxes
                         )
                         
-                        # 更新统计信息
+                        # update stats
                         neighbor_filter_stats["total_pairs_after_filter"] += len(filtered_pairs)
                         neighbor_filter_stats["total_rejected"] += len(rejection_reasons)
                         for pair, reason in rejection_reasons.items():
@@ -230,36 +230,36 @@ class CrossViewAssociator:
                                 "reason": reason
                             })
                         
-                        # 更新候选配对（只保留通过筛选的）
+                        # keep filtered candidate pairs only
                         candidate_pairs = filtered_pairs
                 
                 neighbor_filter_stats["total_pairs_after_filter"] += len(candidate_pairs)
                 
-                # ==================== 应用一对一约束和合并 ====================
-                # 将匹配结果加入并查集
+                # ==================== One-to-one constraint and merge ====================
+                # add matches to union-find
                 for r, c in candidate_pairs:
                     real_r = start_i + r
                     real_c = start_j + c
                     
-                    # 检查一对一约束
+                    # check one-to-one constraint
                     if self.enforce_one_to_one:
-                        # 确保real_r和real_c都还没有被分配
+                        # ensure real_r and real_c not yet assigned
                         root_r = uf.find(real_r)
                         root_c = uf.find(real_c)
                         
-                        # 检查合并后是否会违反一对一约束
+                        # check one-to-one after merge
                         if root_r != root_c:
-                            # 获取两个组的所有成员
+                            # members of both groups
                             group_r = [k for k in range(n_total) if uf.find(k) == root_r]
                             group_c = [k for k in range(n_total) if uf.find(k) == root_c]
                             
-                            # 检查合并后每个视角最多只有一个目标
+                            # at most one target per view after merge
                             merged_group = group_r + group_c
                             view_counts = self._count_targets_per_view(
                                 merged_group, view_start_indices, view_idx_bounds
                             )
                             
-                            # 如果任何视角有多于1个目标，跳过这次合并
+                            # skip merge if any view would have >1 target
                             if all(count <= 1 for count in view_counts.values()):
                                 uf.union(real_r, real_c)
                     else:
@@ -267,19 +267,19 @@ class CrossViewAssociator:
                 #print("ph 250" + str(time.perf_counter()))
         #print("ph 251" + str(time.perf_counter()))
         
-        # 打印邻居筛选统计信息
+        # print neighbor-filter stats
         if self.neighbor_filter is not None:
             print(f"\n{'='*80}")
-            print(f"[NeighborFilter] 邻居筛选统计:")
-            print(f"  - 筛选前候选配对数: {neighbor_filter_stats['total_pairs_before_filter']}")
-            print(f"  - 筛选后保留配对数: {neighbor_filter_stats['total_pairs_after_filter']}")
-            print(f"  - 被拒绝的配对数: {neighbor_filter_stats['total_rejected']}")
+            print(f"[NeighborFilter] Neighbor filter statistics:")
+            print(f"  - Candidate pairs before filter: {neighbor_filter_stats['total_pairs_before_filter']}")
+            print(f"  - Pairs kept after filter: {neighbor_filter_stats['total_pairs_after_filter']}")
+            print(f"  - Rejected pairs: {neighbor_filter_stats['total_rejected']}")
             if neighbor_filter_stats['total_pairs_before_filter'] > 0:
                 rejection_rate = neighbor_filter_stats['total_rejected'] / neighbor_filter_stats['total_pairs_before_filter'] * 100
-                print(f"  - 拒绝率: {rejection_rate:.2f}%")
+                print(f"  - Rejection rate: {rejection_rate:.2f}%")
             print(f"{'='*80}\n")
         
-        # 从并查集提取匹配组
+        # extract match groups from union-find
         groups = uf.get_groups()
         matches = [sorted(group) for group in groups.values()]
         #print("ph 255" + str(time.perf_counter()))
@@ -293,7 +293,7 @@ class CrossViewAssociator:
         view_counts = {}
         
         for idx in indices:
-            # 找到idx属于哪个视角
+            # find which view idx belongs to
             view_idx = self._get_view_index(idx, view_start_indices, view_idx_bounds)
             if view_idx != -1:
                 view_counts[view_idx] = view_counts.get(view_idx, 0) + 1
@@ -319,50 +319,50 @@ class CrossViewAssociator:
         if n_total == 0:
             return []
         
-        # 计算视角起始索引
+        # compute per-view start indices
         view_start_indices = [0]
         for count in view_idx_bounds[:-1]:
             view_start_indices.append(view_start_indices[-1] + count)
         
-        # ⭐ 优化1：预计算每个索引的视角映射（避免重复调用_get_view_index）
+        # Opt 1: precompute view index per global idx
         idx_to_view = {}
         for idx in range(n_total):
             view_idx = self._get_view_index(idx, view_start_indices, view_idx_bounds)
             idx_to_view[idx] = view_idx
         
-        # ⭐ 优化2：预计算每个视角的所有目标索引（加速查找）
+        # Opt 2: precompute all target indices per view
         view_to_indices = {}
         for view_idx in range(len(view_idx_bounds)):
             start = view_start_indices[view_idx]
             end = start + view_idx_bounds[view_idx]
             view_to_indices[view_idx] = set(range(start, end))
         
-        # 初始化动态距离矩阵（会在聚类过程中更新）
+        # init dynamic distance matrix (updated during clustering)
         dynamic_dist = dist_matrix.copy()
         
-        # ==================== 规则1：同视角内距离设为无穷大 ====================
+        # Rule 1: intra-view distances set to inf
         for i, (start, count) in enumerate(zip(view_start_indices, view_idx_bounds)):
             end = start + count
             dynamic_dist[start:end, start:end] = np.inf
         
-        # 对角线设为无穷大（自己与自己）
+        # diagonal set to inf (self-pairs)
         np.fill_diagonal(dynamic_dist, np.inf)
         
-        # 初始化：每个目标是一个独立的簇
+        # init: each target is its own cluster
         clusters = {i: [i] for i in range(n_total)}
         active_clusters = set(range(n_total))
         
-        # 记录每个全局索引属于哪个簇
+        # map global idx -> cluster
         idx_to_cluster = {i: i for i in range(n_total)}
         
-        # 记录每个簇占据了哪些视角（用于一对一约束）
+        # views occupied by each cluster (one-to-one)
         cluster_views = {idx: {idx_to_view[idx]} for idx in range(n_total)}
         
-        # ⭐ 优化3：缓存簇间距离（避免重复计算）
+        # Opt 3: cache inter-cluster distances
         cluster_dist_cache = {}
         
         def get_cluster_distance(ci, cj):
-            """获取两个簇之间的最小距离（Single Linkage）"""
+            """Minimum distance between two clusters (single linkage)."""
             key = (min(ci, cj), max(ci, cj))
             if key in cluster_dist_cache:
                 return cluster_dist_cache[key]
@@ -377,18 +377,18 @@ class CrossViewAssociator:
             cluster_dist_cache[key] = min_d
             return min_d
         
-        # ==================== 迭代聚类过程 ====================
+        # ==================== Iterative clustering ====================
         iteration = 0
-        max_iterations = n_total * 2  # 防止无限循环
+        max_iterations = n_total * 2  # guard against infinite loop
         
         while iteration < max_iterations:
             iteration += 1
             
-            # 在活跃簇之间找到最小距离
+            # find minimum distance among active clusters
             min_dist = np.inf
             best_pair = None
             
-            # ⭐ 优化4：只遍历活跃簇对
+            # Opt 4: iterate active cluster pairs only
             active_list = list(active_clusters)
             for i, ci in enumerate(active_list):
                 for cj in active_list[i+1:]:
@@ -398,67 +398,67 @@ class CrossViewAssociator:
                         min_dist = cluster_dist
                         best_pair = (ci, cj)
             
-            # 终止条件：没有可合并的簇对
+            # stop when no mergeable cluster pair
             if min_dist > self.threshold or np.isinf(min_dist) or best_pair is None:
                 break
             
             ci, cj = best_pair
             
-            # ==================== 检查一对一约束 ====================
+            # ==================== Check one-to-one constraint ====================
             merged_views = cluster_views[ci] | cluster_views[cj]
             
-            # 如果有视角重复，则不能合并（违反一对一约束）
+            # cannot merge if views overlap (one-to-one violation)
             if len(merged_views) < len(cluster_views[ci]) + len(cluster_views[cj]):
-                # 违反一对一约束，屏蔽这对簇之间的所有距离
+                # mask all distances between these clusters
                 for idx_i in clusters[ci]:
                     for idx_j in clusters[cj]:
                         dynamic_dist[idx_i, idx_j] = np.inf
                         dynamic_dist[idx_j, idx_i] = np.inf
                 
-                # ⭐ 清除相关缓存
+                # clear related cache entries
                 key = (min(ci, cj), max(ci, cj))
                 cluster_dist_cache[key] = np.inf
                 continue
             
-            # ==================== 执行合并 ====================
-            # 合并簇cj到簇ci
+            # ==================== Perform merge ====================
+            # merge cluster cj into ci
             clusters[ci].extend(clusters[cj])
             cluster_views[ci] = merged_views
             
-            # 更新idx_to_cluster映射
+            # update idx_to_cluster
             for idx in clusters[cj]:
                 idx_to_cluster[idx] = ci
             
-            # ⭐ 清除与cj相关的所有缓存
+            # clear cache entries involving cj
             keys_to_remove = [k for k in cluster_dist_cache.keys() if ci in k or cj in k]
             for k in keys_to_remove:
                 del cluster_dist_cache[k]
             
-            # 移除簇cj
+            # remove cluster cj
             del clusters[cj]
             del cluster_views[cj]
             active_clusters.remove(cj)
             
-            # ==================== 规则2：更新距离矩阵 ====================
-            # ⭐ 优化5：使用预计算的映射，避免重复调用_get_view_index
+            # Rule 2: update distance matrix
+            # Opt 5: use precomputed mapping
             
-            # 对于ci中的每个目标
+            # for each target in ci
             for idx_i in clusters[ci]:
                 view_i = idx_to_view[idx_i]
                 
-                # 对于已关联的每个视角
+                # for each associated view
                 for assoc_view in cluster_views[ci]:
                     if assoc_view == view_i:
                         continue
                     
-                    # ⭐ 使用预计算的视角索引集合
+                    # use precomputed view index set
                     for idx_other in view_to_indices[assoc_view]:
-                        # 如果idx_other不在同一个簇中，屏蔽距离
+                        # mask distance if idx_other not in same cluster
                         if idx_to_cluster[idx_other] != ci:
                             dynamic_dist[idx_i, idx_other] = np.inf
                             dynamic_dist[idx_other, idx_i] = np.inf
         
-        # ==================== 提取最终匹配结果 ====================
+        # ==================== Extract final matches ====================
         matches = [sorted(cluster) for cluster in clusters.values()]
         
         return matches
@@ -472,11 +472,11 @@ class CrossViewAssociator:
 
         merged = cluster1 + cluster2
         
-        # 检查大小
+        # check size
         if len(merged) > len(view_idx_bounds):
             return False
         
-        # 检查每个视角最多一个目标
+        # at most one target per view
         view_counts = self._count_targets_per_view(
             merged, view_start_indices, view_idx_bounds
         )
@@ -490,32 +490,32 @@ class CrossViewAssociator:
         n_total = dist_matrix.shape[0]
         uf = UnionFind(n_total)
         
-        # 计算视角起始索引
+        # compute per-view start indices
         view_start_indices = [0]
         for count in view_idx_bounds[:-1]:
             view_start_indices.append(view_start_indices[-1] + count)
         
-        # 获取所有跨视角的距离对 (dist, i, j)
+        # all cross-view distance pairs (dist, i, j)
         pairs = []
         for i in range(n_total):
             view_i = self._get_view_index(i, view_start_indices, view_idx_bounds)
             for j in range(i + 1, n_total):
                 view_j = self._get_view_index(j, view_start_indices, view_idx_bounds)
                 
-                # 只考虑跨视角的对
+                # cross-view pairs only
                 if view_i != view_j and dist_matrix[i, j] <= self.threshold:
                     pairs.append((dist_matrix[i, j], i, j))
         
-        # 按距离排序
+        # sort by distance
         pairs.sort(key=lambda x: x[0])
         
-        # 贪心匹配
+        # greedy matching
         for dist, i, j in pairs:
             root_i = uf.find(i)
             root_j = uf.find(j)
             
             if root_i != root_j:
-                # 检查合并约束
+                # check merge constraints
                 group_i = [k for k in range(n_total) if uf.find(k) == root_i]
                 group_j = [k for k in range(n_total) if uf.find(k) == root_j]
                 
@@ -525,7 +525,7 @@ class CrossViewAssociator:
                 ):
                     uf.union(i, j)
         
-        # 提取匹配组
+        # extract match groups
         groups = uf.get_groups()
         matches = [sorted(group) for group in groups.values()]
         
@@ -536,13 +536,13 @@ class CrossViewAssociator:
                                 idx_to_view_id: Dict[int, Tuple[str, int]],
                                 view_names: List[str]) -> Dict[Tuple[str, int], int]:
         """
-        生成全局ID映射（修改版：继承最小ID）
+        Build global ID mapping (inherit minimum local ID).
         """
         mapping = {}
         
-        # 遍历每一组匹配（例如：[idx_of_View1_ID6, idx_of_View2_ID18]）
+        # for each match group (e.g. [idx_view1_id6, idx_view2_id18])
         for match_group in matches:
-            # 1. 先把这一组里所有的原始信息提取出来
+            # 1. collect original info for the group
             group_members = []
             original_ids = []
             
@@ -555,21 +555,21 @@ class CrossViewAssociator:
             if not group_members:
                 continue
                 
-            # 2. 核心策略：选出“老大”
-            # 策略A：最小ID策略 (推荐，最稳健)
-            # 解释：既然这一组都是同一个人，那我就用其中最小的那个ID作为大家的统称。
-            # 比如 {6, 18} -> 选 6。这样 View1 的 ID 6 保持不变，View2 的 ID 18 变成了 6。
+            # 2. pick leader ID
+            # Strategy A: minimum ID (recommended, most stable)
+            # Same person in a group -> use smallest ID as global ID.
+            # e.g. {6, 18} -> 6; view1 keeps 6, view2 remaps 18 -> 6.
             global_id = min(original_ids)
             
-            # 策略B（可选）：主视角优先策略
-            # 如果你希望以 c001 为主，如果组里有 c001 的 ID，就强制用它的。
+            # Strategy B (optional): primary view priority
+            # Prefer c001 ID when present in the group.
             # c001_ids = [mid for v, mid in group_members if v == 'c001']
             # if c001_ids:
             #     global_id = c001_ids[0]
             # else:
             #     global_id = min(original_ids)
             
-            # 3. 建立映射
+            # 3. build mapping
             for view_name, local_id in group_members:
                 mapping[(view_name, local_id)] = global_id
         

@@ -193,7 +193,7 @@ class MetricLogger(object):
         end = time.time()
         iter_time = SmoothedValue(fmt='{avg:.4f}')
         data_time = SmoothedValue(fmt='{avg:.4f}')
-        space_fmt = ':' + str(len(str(len(iterable)))) + 'd'#怎么会是4呢
+        space_fmt = ':' + str(len(str(len(iterable)))) + 'd'
         if torch.cuda.is_available():
             log_msg = self.delimiter.join([
                 header,
@@ -214,7 +214,7 @@ class MetricLogger(object):
                 'data: {data}'
             ])
         MB = 1024.0 * 1024.0
-        for obj in iterable:#开始从数据加载器取数据了
+        for obj in iterable:
             data_time.update(time.time() - end)
             yield obj
             iter_time.update(time.time() - end)
@@ -282,10 +282,10 @@ def _max_by_axis(the_list):
     for sublist in the_list[1:]:
         for index, item in enumerate(sublist):
             maxes[index] = max(maxes[index], item)
-    return maxes#返回的是图像的大小
+    return maxes  # Returns image dimensions
 
 
-def nested_tensor_from_tensor_list(tensor_list: List[Tensor], size_divisibility: int = 0):#用于生成掩码，标记图像中的有效区域，同一输入大小，但是掩码会告诉模型哪些地方是有效的
+def nested_tensor_from_tensor_list(tensor_list: List[Tensor], size_divisibility: int = 0):
     # TODO make this more general
     if tensor_list[0].ndim == 3:
         # TODO make it support different-sized images
@@ -306,10 +306,10 @@ def nested_tensor_from_tensor_list(tensor_list: List[Tensor], size_divisibility:
         mask = torch.ones((b, h, w), dtype=torch.bool, device=device)
         for img, pad_img, m in zip(tensor_list, tensor, mask):
             pad_img[: img.shape[0], : img.shape[1], : img.shape[2]].copy_(img)
-            m[: img.shape[1], :img.shape[2]] = False#意思是有图的部分为false呗
+            m[: img.shape[1], :img.shape[2]] = False  # Valid image regions are False
     else:
         raise ValueError('not supported')
-    return NestedTensor(tensor, mask)#返回图像张量和掩码
+    return NestedTensor(tensor, mask)  # Return image tensor and mask
 
 
 class NestedTensor(object):

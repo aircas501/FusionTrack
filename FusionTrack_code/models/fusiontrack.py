@@ -100,7 +100,7 @@ class FusionTrack(nn.Module):
         if self.visualize:
             os.makedirs("./outputs/visualize_tmp/memotr/", exist_ok=True)
 
-        # 图像经过 backbone
+        # Image passes through backbone
         if self.use_checkpoint and self.checkpoint_level != 3:
             features, pos = checkpoint(self.backbone, frame, use_reentrant=False)
         else:
@@ -194,7 +194,7 @@ class FusionTrack(nn.Module):
                                                    query_mask=query_mask,
                                                    queries=inter_queries)
         res["outputs"] = outputs[-1]     # (B, Nd+Nq, C)
-        # ######添加代码
+        # ###### Added code
         # if self.reid:
         #     if self.training:
         #         cls_score, global_feat = self.query_reid(query_embed, obj_ids)
@@ -320,7 +320,7 @@ def build(config: dict):
     assert config["DATASET"] in dataset_num_classes, f"Do not know the class num of {config['DATASET']} dataset."
     num_classes = dataset_num_classes[config["DATASET"]]
 
-    backbone_with_pe = build_backbone_with_pe(config=config)#主干网络和pe
+    backbone_with_pe = build_backbone_with_pe(config=config)  # backbone network and positional encoding
     deformable_transformer = build_deformable_transformer(config=config)#
     query_updater = build_query_updater(config=config)
     query_reid = build_reid_model(config=config)

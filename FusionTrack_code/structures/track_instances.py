@@ -72,7 +72,7 @@ class TrackInstances:
         """
         tracks_list = []
         h_max, w_max = 0, 0
-        for i in range(len(batch["imgs"])):#一个batch有两个只走了一次
+        for i in range(len(batch["imgs"])):  # batch with two samples only runs once
             h_max = max(batch["imgs"][i][0].shape[-2], h_max)
             w_max = max(batch["imgs"][i][0].shape[-1], w_max)
         for i in range(len(batch["imgs"])):

@@ -75,24 +75,24 @@ class RuntimeTracker:
         new_tracks.disappear_time = torch.zeros((len(new_tracks.logits), ), dtype=torch.long, device=new_tracks.logits.device )
         new_tracks.labels = torch.max(new_tracks.scores, dim=-1).indices
         # =========================================================================
-        # 【新增补丁 1】: New Tracks 内部 NMS (解决初始帧检测重叠/双胞胎框问题)
+        # [Patch 1] Intra-NMS on new tracks (overlapping detections / twin boxes)
         # =========================================================================
         if len(new_tracks) > 0:
             from torchvision.ops import nms
             from utils.box_ops import box_cxcywh_to_xyxy
             
-            # 1. 准备数据
-            # 转换坐标为 xyxy (NMS 需要)
+            # 1. prepare data
+            # convert to xyxy for NMS
             new_boxes_xyxy = box_cxcywh_to_xyxy(new_tracks.boxes)
-            # 获取最高类别的得分作为 NMS 依据
+            # max class score for NMS
             new_scores_max = new_tracks.scores.max(dim=-1).values
             
-            # 2. 执行 NMS
-            # iou_threshold 建议 0.5 到 0.7
+            # 2. run NMS
+            # iou_threshold typically 0.5–0.7
             keep_indices_nms = nms(new_boxes_xyxy, new_scores_max, iou_threshold=0.5)
             
-            # 3. 筛选 (只保留 NMS 剩下的)
-            # 注意：这里直接覆盖 new_tracks 的属性
+            # 3. keep NMS survivors only
+            # overwrites new_tracks fields in place
             new_tracks.logits = new_tracks.logits[keep_indices_nms]
             new_tracks.boxes = new_tracks.boxes[keep_indices_nms]
             new_tracks.scores = new_tracks.scores[keep_indices_nms]
@@ -105,38 +105,38 @@ class RuntimeTracker:
                  new_tracks.ref_pts = new_tracks.ref_pts[keep_indices_nms]
 
         # =========================================================================
-        # 【新增补丁 2】: Track-Detection IoU 抑制 (这是之前建议加的，新老去重)
+        # [Patch 2] Track-detection IoU suppression (dedupe old vs new)
         # =========================================================================
 
         # =========================================================================
-        # 【新增代码开始】 Track-Detection IoU 抑制 (解决新老目标重叠问题)
+        # [Begin] Track-detection IoU suppression (overlap between old and new)
         # =========================================================================
         if len(tracks[0]) > 0 and len(new_tracks) > 0:
-            # 引入必要的计算函数 (如果没有导入，建议移到文件头部)
+            # local imports (prefer moving to file top)
             from torchvision.ops import box_iou
             from utils.box_ops import box_cxcywh_to_xyxy 
 
-            # 1. 坐标转换：模型输出通常是 cxcywh，计算 IoU 需要 xyxy
-            # 注意：这里假设 tracks[0].boxes 和 new_tracks.boxes 都是归一化或非归一化的 cxcywh
-            # 如果你的 boxes 已经是 xyxy，则不需要这一步转换
+            # 1. cxcywh -> xyxy for IoU
+            # assumes boxes are cxcywh (normalized or not)
+            # skip conversion if boxes are already xyxy
             track_boxes_xyxy = box_cxcywh_to_xyxy(tracks[0].boxes)
             new_boxes_xyxy = box_cxcywh_to_xyxy(new_tracks.boxes)
 
-            # 2. 计算 IoU 矩阵 [N_new, N_old]
-            # ious[i, j] 代表第 i 个新目标 和 第 j 个老目标 的重叠度
+            # 2. IoU matrix [N_new, N_old]
+            # ious[i, j] = overlap between new i and old j
             ious = box_iou(new_boxes_xyxy, track_boxes_xyxy)
 
-            # 3. 判定重复
-            # 对于每个新目标，看它和所有老目标的最大 IoU 是多少
-            # 如果最大 IoU > 0.5 (阈值可调)，就认为它是重复的
+            # 3. mark duplicates
+            # max IoU of each new det vs all old tracks
+            # duplicate if max IoU > 0.5 (tunable)
             max_iou_values, _ = ious.max(dim=1)
             is_duplicate = max_iou_values > 0.5 
             
-            # 4. 筛选：只保留【不是】重复的目标
+            # 4. keep non-duplicate new tracks
             keep_indices = ~is_duplicate
 
-            # 5. 应用筛选到 new_tracks 的所有属性
-            # 只有当确实有需要删除的目标时才执行切片，节省性能
+            # 5. apply mask to all new_tracks fields
+            # slice only when some dets are removed
             if not keep_indices.all():
                 new_tracks.logits = new_tracks.logits[keep_indices]
                 new_tracks.boxes = new_tracks.boxes[keep_indices]
@@ -146,13 +146,13 @@ class RuntimeTracker:
                 new_tracks.disappear_time = new_tracks.disappear_time[keep_indices]
                 new_tracks.labels = new_tracks.labels[keep_indices]
                 
-                # 如果有 ref_pts 也要切片 (看你的代码里是有 ref_pts 的)
+                # slice ref_pts if present
                 if hasattr(new_tracks, 'ref_pts'):
                     new_tracks.ref_pts = new_tracks.ref_pts[keep_indices]
 
-                # 如果有 aux_outputs 相关的属性也要注意检查
+                # check aux_outputs-related fields if any
         # =========================================================================
-        # 【新增代码结束】
+        # [End] Track-detection IoU suppression
         # =========================================================================
 
         # We do not use this post-precess motion module in our final version,

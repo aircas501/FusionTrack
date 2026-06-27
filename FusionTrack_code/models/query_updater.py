@@ -74,12 +74,12 @@ class QueryUpdater(nn.Module):
                 new_tracks: List[TrackInstances],
                 unmatched_dets: List[TrackInstances] | None,
                 no_augment: bool = False):
-        tracks = self.select_active_tracks(previous_tracks, new_tracks, unmatched_dets, no_augment=no_augment)#在当前帧处理结束后，负责挑选和初始化哪些轨迹（Tracks）应该被保留并传递给下一帧
+        tracks = self.select_active_tracks(previous_tracks, new_tracks, unmatched_dets, no_augment=no_augment)  # After this frame: select and init tracks to carry to the next frame
         tracks = self.update_tracks_embedding(tracks=tracks)
 
         return tracks
 
-    def update_tracks_embedding(self, tracks: List[TrackInstances]):#拿着当前帧的观测结果Output Embedding，去更新 Track的内部状态（Query Embedding），从而生成用于下一帧的查询向量
+    def update_tracks_embedding(self, tracks: List[TrackInstances]):  # Update track query state from current-frame output embeddings for next-frame queries
         for b in range(len(tracks)):
             scores = torch.max(logits_to_scores(logits=tracks[b].logits), dim=1).values
             is_pos = scores > self.update_threshold
@@ -105,8 +105,8 @@ class QueryUpdater(nn.Module):
             last_output_embed = tracks[b].last_output
             long_memory = tracks[b].long_memory.detach()
 
-            # Confidence Weight给特征打分
-            confidence_weight = self.confidence_weight_net(output_embed)#这个打分其实也是我想用到置信度引导的模态更新
+            # Confidence weight scores features
+            confidence_weight = self.confidence_weight_net(output_embed)  # Intended for confidence-guided modality update
 
             # Adaptive Aggregation
             short_memory = self.short_memory_fusion(
@@ -114,26 +114,26 @@ class QueryUpdater(nn.Module):
                     confidence_weight * output_embed,
                     last_output_embed
                 ), dim=-1)
-            )#将特征融合到短期记忆中
+            )  # Fuse features into short-term memory
 
             # Query Feature Generate
             query_pos = self.query_pos_head(query_pos)
-            q = short_memory + query_pos#短期记忆做查询
-            k = long_memory + query_pos#长期记忆做k
-            tgt = output_embed#当前目标做v
+            q = short_memory + query_pos  # Short-term memory as query
+            k = long_memory + query_pos  # Long-term memory as key
+            tgt = output_embed  # Current target as value
             # Attention
             tgt2 = self.memory_attn(q[None, :], k[None, :], tgt[None, :])[0][0, :]
             tgt = tgt + self.memory_dropout(tgt2)
             tgt = self.memory_norm(tgt)
             tgt = self.memory_ffn(tgt)
             # Long Memory ResNet
-            query_feat = long_memory + self.query_feat_dropout(tgt)#query特征是用长期记忆+当前帧的信息
+            query_feat = long_memory + self.query_feat_dropout(tgt)  # Query feature = long-term memory + current-frame info
             query_feat = self.query_feat_norm(query_feat)
             query_feat = self.query_feat_ffn(query_feat)
 
             # Update Long Memory
             long_memory = (1 - self.long_memory_lambda) * long_memory + \
-                          self.long_memory_lambda * tracks[b].output_embed#新记忆=0.99原始记忆+0.01当前记忆
+                          self.long_memory_lambda * tracks[b].output_embed  # new_memory = 0.99 * old + 0.01 * current
             tracks[b].long_memory = tracks[b].long_memory * ~is_pos.reshape((is_pos.shape[0], 1)) + \
                                     long_memory * is_pos.reshape((is_pos.shape[0], 1))
             # Update Last Outputs Embedding
@@ -168,7 +168,7 @@ class QueryUpdater(nn.Module):
     def select_active_tracks(self, previous_tracks: List[TrackInstances],
                              new_tracks: List[TrackInstances],
                              unmatched_dets: List[TrackInstances],
-                             no_augment: bool = False):#在当前帧处理结束后，负责“挑选”和“初始化”哪些轨迹（Tracks）应该被保留并传递给下一帧
+                             no_augment: bool = False):  # After this frame: select and init tracks to carry to the next frame
         tracks = []
         if self.training:
             for b in range(len(new_tracks)):
@@ -240,7 +240,7 @@ class QueryUpdater(nn.Module):
                     fake_tracks.long_memory = torch.randn((1, self.hidden_dim), dtype=torch.float, device=device)
                     active_tracks = fake_tracks
                 tracks.append(active_tracks)
-        else:#推理时合并先前和新的轨迹，保留id》=0的
+        else:  # At inference: merge previous and new tracks; keep id >= 0
             # Eval only has B=1.
             assert len(previous_tracks) == 1 and len(new_tracks) == 1
             new_tracks[0].last_output = new_tracks[0].output_embed
@@ -252,7 +252,7 @@ class QueryUpdater(nn.Module):
             active_tracks = TrackInstances.cat_tracked_instances(previous_tracks[0], new_tracks[0])
             active_tracks = active_tracks[active_tracks.ids >= 0]
             tracks.append(active_tracks)
-        return tracks#iou<0.5的就会设置为0
+        return tracks  # Tracks with iou < 0.5 get id set to 0
 
 
 def build(config: dict):

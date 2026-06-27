@@ -41,14 +41,14 @@ class SeqMultiViewDataset(Dataset):
         self.mean = [0.485, 0.456, 0.406]
         self.std = [0.229, 0.224, 0.225]
         
-        # ⭐ 可选：图像缓存到内存（提升10-20倍数据加载速度）
-        # 注意：需要大量内存（约：帧数 × 5视角 × 3-5MB ≈ 数GB）
+        # Optional: cache images in memory (10-20x faster data loading)
+        # Note: requires substantial memory (~ frames x 5 views x 3-5MB ~= several GB)
         self.cache_images = config.get("CACHE_IMAGES", False)
         self.image_cache = {}
         
         if self.cache_images:
-            print("[Dataset] ⚠️ 启用图像缓存，预加载所有图像到内存...")
-            print(f"[Dataset] 预计内存占用: {len(self.uav_gts[self.viewpoints[0]]) * len(self.viewpoints) * 4 / 1024:.1f} GB")
+            print("[Dataset] Image cache enabled, preloading all images into memory...")
+            print(f"[Dataset] Estimated memory usage: {len(self.uav_gts[self.viewpoints[0]]) * len(self.viewpoints) * 4 / 1024:.1f} GB")
             
             from tqdm import tqdm
             for view in self.viewpoints:
@@ -57,21 +57,21 @@ class SeqMultiViewDataset(Dataset):
                     img = self.load(img_path)
                     self.image_cache[view].append(img)
             
-            print("[Dataset] ✅ 图像预加载完成！GPU利用率将显著提升。")
+            print("[Dataset] Image preload complete. GPU utilization should improve significantly.")
         
         return
 
     @staticmethod
     def load(path):
-        # ⭐ 优化：使用PIL替代OpenCV，PIL.Image.open()比cv2.imread()快20-30%
+        # Optimization: use PIL instead of OpenCV; PIL.Image.open() is 20-30% faster than cv2.imread()
         from PIL import Image
         import numpy as np
         
         image = Image.open(path).convert('RGB')
-        image = np.array(image)  # 转为numpy array保持兼容性
+        image = np.array(image)  # Convert to numpy array for compatibility
         return image
         
-        # ❌ 旧代码（较慢）
+        # Legacy code (slower)
         # image = cv2.imread(path)
         # assert image is not None
         # image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -108,7 +108,7 @@ class SeqMultiViewDataset(Dataset):
             except:
                 print("error" + str(item))
 
-            # ⭐ 优化：优先从缓存读取（内存），否则从磁盘加载
+            # Optimization: read from cache (memory) first, otherwise load from disk
             if self.cache_images:
                 image = self.image_cache[view][item]
             else:

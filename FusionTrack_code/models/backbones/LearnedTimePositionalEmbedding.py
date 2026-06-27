@@ -16,7 +16,7 @@ class LearnedTimePositionalEmbedding(nn.Module):
         Args:
             x: (batch_size, seq_len, d_model)
         Returns:
-            添加位置编码后的张量 (batch_size, seq_len, d_model)
+            Tensor with positional encoding added (batch_size, seq_len, d_model)
         """
         positions = torch.arange(x.size(1), device=x.device).expand(x.size(0), x.size(1))
         position_embeddings = self.embedding(positions)

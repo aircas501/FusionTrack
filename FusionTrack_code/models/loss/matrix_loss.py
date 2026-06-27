@@ -49,14 +49,14 @@ def cosine_dist(x, y):
     return dist
 
 def find_closest(dist_matrix, thres):
-    # 全局最小值的坐标
-    min_row = torch.argmin(dist_matrix.min(dim=1)[0]).item()  # 先找每行最小，再找全局最小行
-    min_col = torch.argmin(dist_matrix[min_row]).item()       # 在最小行中找列
+    # Coordinates of the global minimum
+    min_row = torch.argmin(dist_matrix.min(dim=1)[0]).item()  # Min per row, then global min row
+    min_col = torch.argmin(dist_matrix[min_row]).item()       # Min column in that row
     min_value = dist_matrix[min_row][min_col].item()
     if(min_value > thres):
-        print("找不到了")
+        print("No match found")
         return -1, -1, min_value
-    print(f"找到了：{min_row}, {min_col}, {min_value}")
+    print(f"Found: {min_row}, {min_col}, {min_value}")
     return min_row, min_col, min_value
 
 def merge_closest_pair(clusters, min_row, min_col, view_idx_bound):
@@ -66,12 +66,12 @@ def merge_closest_pair(clusters, min_row, min_col, view_idx_bound):
 
     mearged_points = cluster1['points'] + cluster2['points']
     if len(mearged_points) > len(view_idx_bound):
-        print("合并后点数超过最大值")
+        print("Merged point count exceeds maximum")
         return False
     for i in range(0, len(mearged_points), 1):
         for j in range(i + 1, len(mearged_points), 1):
             if get_view_name_from_idx(view_idx_bound, mearged_points[i]) == get_view_name_from_idx(view_idx_bound, mearged_points[j]):
-                print("合并后存在相同视图中的不同点")
+                print("Merge would combine different points from the same view")
                 return False
     return True
     
@@ -102,33 +102,34 @@ def update_dist_matrix(dist_matrix, min_row, min_col, view_idx_bound):
     
 def agglomerative_clustering(dist_matrix, view_idx_bound):
     """
-    自行实现的层次聚类算法
-    :param data: 输入数据，格式为 [[x1,y1,...], [x2,y2,...], ...]
-    :param k: 目标簇数量
-    :param linkage: 连接方式 ('single', 'complete', 'average')
-    :return: 聚类标签列表，如 [0, 1, 0, 2, ...]
+    Custom agglomerative clustering implementation.
+
+    :param data: Input data as [[x1,y1,...], [x2,y2,...], ...]
+    :param k: Target number of clusters
+    :param linkage: Linkage method ('single', 'complete', 'average')
+    :return: Cluster label list, e.g. [0, 1, 0, 2, ...]
     """
 
-    # 初始化：每个点作为一个簇
+    # Initialize: each point is its own cluster
     total_num = dist_matrix.shape[0]
     clusters = [{'points': [i]} for i in range(total_num)]
 
-    # 逐步合并簇，直到剩下k个
+    # Merge clusters until k remain
     while (True):
         min_row, min_col, min_value = find_closest(dist_matrix=dist_matrix, thres=0.5)
         if min_row == -1:
             break
-        # 找出距离最近的两个簇
+        # Find the two closest clusters
         if min_row > min_col:
             min_row, min_col = min_col, min_row
         
         if(merge_closest_pair(clusters, min_row, min_col, view_idx_bound)):
-            #更新距离矩阵
-            dist_matrix = update_dist_matrix(dist_matrix, min_row, min_col, view_idx_bound)#保证同一视角目标中不会有两个和另一视角中的某一目标关联
-            # merge两个簇，别忘了id排序
+            # Update distance matrix
+            dist_matrix = update_dist_matrix(dist_matrix, min_row, min_col, view_idx_bound)  # Ensure no two targets in the same view link to the same target in another view
+            # Merge the two clusters; keep IDs sorted
 
             clusters[min_row]['points'].extend(clusters[min_col]['points'])
-            clusters[min_row]['points'].sort()  # 确保id有序
+            clusters[min_row]['points'].sort()  # Keep IDs ordered
             for update_id in clusters[min_row]['points']:
               clusters[update_id]['points'] = clusters[min_row]['points']
         else:
@@ -139,7 +140,7 @@ def agglomerative_clustering(dist_matrix, view_idx_bound):
     for cluster in clusters:
         tmp = cluster['points']
         while (len(tmp) < view_num):
-            tmp.append(-1)#这里是保证必须有视角数目的id
+            tmp.append(-1)  # Pad to have one entry per view
         clusters_id.append(tmp)
     uniques = np.unique(np.array(clusters_id), axis=0)
     res = []
@@ -153,39 +154,42 @@ from scipy.optimize import linear_sum_assignment
 
 class UnionFind:
     """
-    并查集数据结构，用于高效管理和合并等价集合
-    用于跨视角目标关联中的全局ID融合
+    Union-Find (disjoint set) for efficient equivalence-class management.
+    Used for global ID fusion in cross-view target association.
     """
     def __init__(self, n):
         """
-        初始化并查集
+        Initialize union-find structure.
+
         Args:
-            n: 元素数量
+            n: Number of elements
         """
-        self.parent = list(range(n))  # 每个元素的父节点
-        self.rank = [0] * n  # 树的秩（用于按秩合并优化）
-        self.count = n  # 连通分量数量
+        self.parent = list(range(n))  # Parent of each element
+        self.rank = [0] * n  # Tree rank (for union-by-rank)
+        self.count = n  # Number of connected components
     
     def find(self, x):
         """
-        查找元素x的根节点（带路径压缩）
+        Find root of element x (with path compression).
+
         Args:
-            x: 元素索引
+            x: Element index
         Returns:
-            根节点索引
+            Root index
         """
         if self.parent[x] != x:
-            self.parent[x] = self.find(self.parent[x])  # 路径压缩
+            self.parent[x] = self.find(self.parent[x])  # Path compression
         return self.parent[x]
     
     def union(self, x, y):
         """
-        合并元素x和y所在的集合
+        Merge the sets containing x and y.
+
         Args:
-            x: 元素索引
-            y: 元素索引
+            x: Element index
+            y: Element index
         Returns:
-            是否成功合并（如果已在同一集合则返回False）
+            True if merged; False if already in the same set
         """
         root_x = self.find(x)
         root_y = self.find(y)
@@ -193,7 +197,7 @@ class UnionFind:
         if root_x == root_y:
             return False
         
-        # 按秩合并
+        # Union by rank
         if self.rank[root_x] < self.rank[root_y]:
             self.parent[root_x] = root_y
         elif self.rank[root_x] > self.rank[root_y]:
@@ -207,18 +211,20 @@ class UnionFind:
     
     def is_connected(self, x, y):
         """
-        判断元素x和y是否在同一集合
+        Check whether x and y are in the same set.
+
         Args:
-            x: 元素索引
-            y: 元素索引
+            x: Element index
+            y: Element index
         Returns:
-            是否连通
+            Whether they are connected
         """
         return self.find(x) == self.find(y)
     
     def get_groups(self):
         """
-        获取所有的连通分量（等价集合）
+        Get all connected components (equivalence sets).
+
         Returns:
             dict: {root: [members]}
         """
@@ -233,11 +239,12 @@ class UnionFind:
 
 def cross_view_matching(dist_matrix, view_idx_bound, threshold=0.5):
     """
-    基于距离矩阵进行跨视角匈牙利匹配
-    :param dist_matrix: 输入的距离矩阵 (N, N)，N是所有视角track的总数
-    :param view_idx_bound: 每个视角的起始索引，如[0, 10, 20]表示View1:[0-9], View2:[10-19], View3:[20-...]
-    :param threshold: 距离阈值，大于该值的pair不匹配
-    :return: 匹配结果列表，每个元素是一个list，表示聚到一起的id集合
+    Cross-view Hungarian matching from a distance matrix.
+
+    :param dist_matrix: Distance matrix (N, N), N = total tracks across all views
+    :param view_idx_bound: Per-view start indices, e.g. [0, 10, 20] => View1:[0-9], View2:[10-19], View3:[20-...]
+    :param threshold: Distance threshold; pairs above this are not matched
+    :return: List of matches; each element is a list of IDs grouped together
     """
 
     total_num = dist_matrix.shape[0]
@@ -248,20 +255,20 @@ def cross_view_matching(dist_matrix, view_idx_bound, threshold=0.5):
 
     for i in range(view_num):
         for j in range(i+1, view_num):
-            # 分别取出两个视角的目标索引范围
+            # Index ranges for the two views
             start_i, end_i = view_idx_bound[i], view_idx_bound[i+1]
             start_j, end_j = view_idx_bound[j], view_idx_bound[j+1]
 
             sub_matrix = dist_matrix[start_i:end_i, start_j:end_j].copy()
 
-            # 超过阈值的位置设置成很大
+            # Set positions above threshold to a large value
             sub_matrix[sub_matrix > threshold] = 1e6
 
-            # 如果sub_matrix都是inf就跳过
+            # Skip if sub_matrix is all inf
             if np.all(sub_matrix == 1e6):
                 continue
 
-            # 使用匈牙利算法匹配
+            # Hungarian matching
             row_ind, col_ind = linear_sum_assignment(sub_matrix)
 
             for r, c in zip(row_ind, col_ind):
@@ -272,7 +279,7 @@ def cross_view_matching(dist_matrix, view_idx_bound, threshold=0.5):
                     matched[real_r] = True
                     matched[real_c] = True
 
-    # 把没有被匹配到的单独作为一组
+    # Unmatched items form their own groups
     for idx in range(total_num):
         if not matched[idx]:
             matches.append([idx])
@@ -311,5 +318,4 @@ class MatrixLoss(object):
         else:
             loss = self.ranking_loss(dist_an - dist_ap, y)
         return loss, dist_ap, dist_an
-
 

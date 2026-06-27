@@ -70,7 +70,7 @@ if __name__ == '__main__':
                 w , h = x2-x1 , y2-y1
 
                 new_rect = list(map(int, [x1, y1, w, h]))
-                # new_rect = rect # 使用原bbox
+                # new_rect = rect # use original bbox
                 rect = list(map(int, rect))
                 if (cid, tid) in map_tid:
                     new_tid = map_tid[(cid, tid)]

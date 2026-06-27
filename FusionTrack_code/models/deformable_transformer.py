@@ -86,7 +86,7 @@ class DeformableTransformer(nn.Module):
         self.level_embed = nn.Parameter(torch.Tensor(n_feature_levels, d_model))
 
         if two_stage:
-            # 目前不关心 two stage 的情况
+            # Two-stage mode is not supported currently
             self.enc_output = nn.Linear(d_model, d_model)
             self.enc_output_norm = nn.LayerNorm(d_model)
             self.pos_trans = nn.Linear(d_model * 2, d_model * 2)
@@ -130,7 +130,7 @@ class DeformableTransformer(nn.Module):
         pos = torch.stack((pos[:, :, :, 0::2].sin(), pos[:, :, :, 1::2].cos()), dim=4).flatten(2)
         return pos
 
-    def gen_encoder_output_proposals(self, memory, memory_padding_mask, spatial_shapes): #没啥用
+    def gen_encoder_output_proposals(self, memory, memory_padding_mask, spatial_shapes):  # unused
         N_, S_, C_ = memory.shape
         base_scale = 4.0
         proposals = []

@@ -36,21 +36,21 @@ def load_checkpoint(model: nn.Module, path: str, states: dict = None,
 
     if is_main_process():
         try:
-            # 尝试严格加载
+            # Try strict loading
             incompatible_keys = model.load_state_dict(load_state["model"], strict=strict)
             
             if not strict:
-                # 非严格模式下，报告不匹配的键
+                # In non-strict mode, report mismatched keys
                 if incompatible_keys.missing_keys:
                     print(f"[WARNING] Missing keys when loading checkpoint from {path}:")
-                    for key in incompatible_keys.missing_keys[:10]:  # 只显示前10个
+                    for key in incompatible_keys.missing_keys[:10]:  # show first 10 only
                         print(f"  - {key}")
                     if len(incompatible_keys.missing_keys) > 10:
                         print(f"  ... and {len(incompatible_keys.missing_keys) - 10} more keys")
                 
                 if incompatible_keys.unexpected_keys:
                     print(f"[WARNING] Unexpected keys when loading checkpoint from {path}:")
-                    for key in incompatible_keys.unexpected_keys[:10]:  # 只显示前10个
+                    for key in incompatible_keys.unexpected_keys[:10]:  # show first 10 only
                         print(f"  - {key}")
                     if len(incompatible_keys.unexpected_keys) > 10:
                         print(f"  ... and {len(incompatible_keys.unexpected_keys) - 10} more keys")
@@ -60,11 +60,11 @@ def load_checkpoint(model: nn.Module, path: str, states: dict = None,
                 print(f"[INFO] This is likely because the model architecture has changed.")
                 print(f"[INFO] Attempting to load with strict=False to skip mismatched parameters...")
                 
-                # 手动过滤掉维度不匹配的参数
+                # Manually filter out parameters with shape mismatch
                 model_state = model.state_dict()
                 checkpoint_state = load_state["model"]
                 
-                # 过滤掉维度不匹配的参数
+                # Filter out parameters with shape mismatch
                 filtered_state = {}
                 mismatched_keys = []
                 for key, value in checkpoint_state.items():
@@ -76,16 +76,16 @@ def load_checkpoint(model: nn.Module, path: str, states: dict = None,
                                 f"{key}: checkpoint {value.shape} vs model {model_state[key].shape}"
                             )
                     else:
-                        # 键不存在于当前模型
+                        # Key does not exist in current model
                         pass
                 
-                # 加载过滤后的状态
+                # Load filtered state dict
                 model.load_state_dict(filtered_state, strict=False)
                 
                 print(f"[INFO] Successfully loaded {len(filtered_state)}/{len(checkpoint_state)} parameters")
                 if mismatched_keys:
                     print(f"[INFO] Skipped {len(mismatched_keys)} parameters due to size mismatch:")
-                    for key_info in mismatched_keys[:5]:  # 只显示前5个
+                    for key_info in mismatched_keys[:5]:  # show first 5 only
                         print(f"  - {key_info}")
                     if len(mismatched_keys) > 5:
                         print(f"  ... and {len(mismatched_keys) - 5} more")
@@ -142,7 +142,7 @@ def query_masks_to_attn_mask(query_mask: torch.Tensor, n_heads: int, src_len: in
     return attn_mask
 
 
-def pos_to_pos_embed(pos, num_pos_feats: int = 64, temperature: int = 10000, scale: float = 2 * math.pi):#将坐标值转换成高维的正弦位置编码
+def pos_to_pos_embed(pos, num_pos_feats: int = 64, temperature: int = 10000, scale: float = 2 * math.pi):  # convert coordinates to high-dimensional sinusoidal positional encoding
     pos = pos * scale
     dim_i = torch.arange(num_pos_feats, dtype=torch.float32, device=pos.device)
     dim_i = temperature ** (2 * (torch.div(dim_i, 2, rounding_mode="trunc")) / num_pos_feats)

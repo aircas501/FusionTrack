@@ -14,7 +14,7 @@ def parse_option():
 
     parser.add_argument("--git-version", type=str)
 
-    # About system, Like GPUs:系统设置
+    # About system, e.g. GPUs
     parser.add_argument("--available-gpus", type=str, help="Available GPUs, like '0,1,2,3'.")
     parser.add_argument("--use-distributed", action="store_true", help="Use distributed training.")
     parser.add_argument("--use-checkpoint", action="store_true", help="Use gradient checkpoint to save GPU memory.")
@@ -22,16 +22,16 @@ def parse_option():
     parser.add_argument("--local_rank",type=int,default=0,help="Local rank for distributed training (used by torch.distributed.launch/torchrun).")
 
 
-    # Running mode, Training? Evaluation? or ? 训练模式选择
+    # Running mode: training, evaluation, etc.
     parser.add_argument("--mode", type=str, help="Running mode.")
 
-    # Only For **Result Submit Process**: 推理使用
+    # Only for result submission (inference)
     parser.add_argument("--submit-dir", type=str)
     parser.add_argument("--submit-model1", type=str, help="Main model checkpoint (tracking model).")
     parser.add_argument("--submit-model2", type=str, help="ReID model checkpoint.")
     parser.add_argument("--submit-data-split", type=str)
 
-    # Only For **Model Eval Process**:模型评估使用
+    # Only for model evaluation
     parser.add_argument("--eval-dir", type=str)
     parser.add_argument("--eval-mode", type=str)
     parser.add_argument("--eval-model", type=str)
@@ -39,15 +39,15 @@ def parse_option():
     parser.add_argument("--eval-port", type=int)
     parser.add_argument("--eval-data-split", type=str)
 
-    # Pretrained Model Load:预训练模型
-    parser.add_argument("--pretrained-model", type=str, help="Pretrained model path.")#这里既然有resume1跟2了，怎么还有个这个
-    # Resume 这里应该要加载两个，一个是MeMOTR一个是ReID
+    # Pretrained model load
+    parser.add_argument("--pretrained-model", type=str, help="Pretrained model path.")  # separate from resume1/resume2 for initial pretraining
+    # Resume: load two checkpoints — MeMOTR (tracking) and ReID
     parser.add_argument("--resume1", type=str, help="Resume1 checkpoint path.")
     parser.add_argument("--resume2", type=str, help="Resume2 checkpoint path.")
     parser.add_argument("--resume-scheduler", type=str, help="Whether resume the training scheduler.")
 
     # About Paths:
-    # Config file:配置文件
+    # Config file
     parser.add_argument("--config-path", type=str, help="Config file path.",
                         default="./configs/train_dancetrack.yaml")
     # Data Path:
@@ -69,7 +69,7 @@ def parse_option():
     parser.add_argument("--sample-steps", type=int, nargs="*")
     parser.add_argument("--sample-lengths", type=int, nargs="*")
 
-    # Training setting：
+    # Training settings
     parser.add_argument("--weight-decay", type=float)
     parser.add_argument("--lr", type=float)
     parser.add_argument("--lr-points", type=float)
@@ -77,10 +77,10 @@ def parse_option():
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--lr-drop-milestones", type=int, nargs="*")
 
-    # Submit setting：
+    # Submit settings
     parser.add_argument("--miss-tolerance", type=float)
 
-    # Model setting：检测query数量
+    # Model settings: number of detection queries
     parser.add_argument("--num-det-queries", type=int)
     parser.add_argument("--merge-det-track-layer", type=int)
 
@@ -94,19 +94,19 @@ def parse_option():
 
 
 def main(config: dict):
-    # 如果已经设置了 CUDA_VISIBLE_DEVICES，不要覆盖
-    # 注意：torchrun/launch 脚本应该在外部设置 CUDA_VISIBLE_DEVICES
+    # Do not override CUDA_VISIBLE_DEVICES if already set
+    # Note: torchrun/launch scripts should set CUDA_VISIBLE_DEVICES externally
     if "CUDA_VISIBLE_DEVICES" not in os.environ:
         os.environ["CUDA_VISIBLE_DEVICES"] = config["AVAILABLE_GPUS"]
     
-    # 是否使用TF32开关，false会更准但是更慢
+    # TF32 toggle: False is more accurate but slower
     # torch.backends.cuda.matmul.allow_tf32 = False
     # torch.backends.cudnn.allow_tf32 = False
 
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     import time
-    if config["USE_DISTRIBUTED"]:#分布式启用
+    if config["USE_DISTRIBUTED"]:  # enable distributed training
         torch.distributed.init_process_group("nccl")
         torch.cuda.set_device(distributed_rank())
         print(f"[Rank {distributed_rank()}] Using logical GPU {torch.cuda.current_device()}, "
@@ -131,6 +131,6 @@ if __name__ == '__main__':
     opt = parse_option()                  # runtime options
     cfg = yaml_to_dict(opt.config_path)   # configs
     # Merge parser option and .yaml config, then run main function.
-    merged_config = update_config(config=cfg, option=opt)###按照命令行更新参数
-    merged_config["CONFIG_PATH"] = opt.config_path#按照配置文件更新参数
+    merged_config = update_config(config=cfg, option=opt)  # merge CLI options into config
+    merged_config["CONFIG_PATH"] = opt.config_path
     main(config=merged_config)

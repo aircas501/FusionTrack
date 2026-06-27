@@ -33,38 +33,38 @@ from models.utils import load_pretrained_model
 def extract_multiframe_queries_from_memorybank(memory_bank, track_id, view_name, window_size=5, feat_dim=256):
 
     if memory_bank is None or not hasattr(memory_bank, 'deque'):
-        # 如果没有MemoryBank，返回window_size个0向量
+        # without MemoryBank, return window_size zero vectors
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         return [torch.zeros(feat_dim, device=device) for _ in range(window_size)]
     
-    # 从MemoryBank的deque中提取最近window_size帧
-    # deque的最后一个元素是最新的帧
+    # take last window_size frames from MemoryBank deque
+    # last deque element is the newest frame
     recent_frames = list(memory_bank.deque)[-window_size:] if len(memory_bank.deque) >= window_size else list(memory_bank.deque)
     
-    # 获取设备
+    # get device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # 初始化固定长度的列表，全部填充0向量
+    # fixed-length list filled with zero vectors
     history_queries = [torch.zeros(feat_dim, device=device) for _ in range(window_size)]
     
-    # 计算起始位置：如果MemoryBank不足window_size帧，从后面开始填充
-    # 例如：window_size=5，但只有3帧历史，则填充在index [2,3,4]位置
+    # start index: pad from the end if history < window_size
+    # e.g. window_size=5 with 3 frames -> indices [2,3,4]
     start_idx = window_size - len(recent_frames)
     
-    # 遍历recent_frames，填充到对应位置
+    # fill recent_frames into aligned slots
     for i, frame_data in enumerate(recent_frames):
         views = frame_data.get("views", {})
         if view_name in views:
             track_data = views[view_name].get(track_id, None)
             if track_data is not None and "feat" in track_data:
-                # feat是query特征
+                # feat is query feature
                 query_feat = track_data["feat"]
                 if isinstance(query_feat, torch.Tensor):
-                    # 填充到对应位置（保持时序关系）
+                    # fill slot preserving temporal order
                     history_queries[start_idx + i] = query_feat.clone().to(device)
     
-    # ⭐ 关键：返回固定长度的列表，缺失的帧保持为0向量
-    # ReID模型会自动检测0向量并生成mask=False
+    # key: fixed-length list; missing frames stay zero
+    # ReID model treats zero vectors as mask=False
     return history_queries
 
 
@@ -80,7 +80,7 @@ def calculate_reid_loss_with_current_and_memory(current_features, reID_pool, rei
     reid_model_unwrapped = get_model(reid_model)
     
     # ========================================
-    # Step 1: 按ID分组（用于跨视角正样本构建）
+    # Step 1: group by ID (cross-view positives)
     # ========================================
     features_by_id = {}  # {track_id: [(view, feat), ...]}
     
@@ -90,13 +90,13 @@ def calculate_reid_loss_with_current_and_memory(current_features, reID_pool, rei
         features_by_id[track_id].append((view, reid_feat))
     
     # ========================================
-    # Part 1: ID 分类损失（所有样本都参与）
+    # Part 1: ID classification loss (all samples)
     # ========================================
     current_id_loss = None
     cls_score_list = []
     gt_labels_list = []
     
-    # 获取classifier的类别数
+    # number of classifier classes
     num_classes = None
     if hasattr(reid_model_unwrapped, 'classifier'):
         if hasattr(reid_model_unwrapped.classifier, 'out_features'):
@@ -104,13 +104,13 @@ def calculate_reid_loss_with_current_and_memory(current_features, reID_pool, rei
         elif hasattr(reid_model_unwrapped.classifier, 'num_classes'):
             num_classes = reid_model_unwrapped.classifier.num_classes
     
-    # 遍历所有ID的所有视角
+    # all views for all IDs
     for track_id, view_feat_list in features_by_id.items():
-        # ⚠️ 检查track_id是否超出范围
+        # check track_id within class range
         if num_classes is not None and track_id >= num_classes:
             continue
         
-        # ✅ 每个视角的特征都计算一次分类损失
+        # classification loss per view feature
         for view, reid_feat in view_feat_list:
             reid_feat_input = reid_feat.unsqueeze(0) if reid_feat.dim() == 1 else reid_feat
             
@@ -135,7 +135,7 @@ def calculate_reid_loss_with_current_and_memory(current_features, reID_pool, rei
         )
     
     # ========================================
-    # Part 2: Triplet Loss（优先使用跨视角正样本）
+    # Part 2: Triplet loss (prefer cross-view positives)
     # ========================================
     current_triplet_loss = None
     min_unique_ids_for_triplet = config.get("TRIPLET_MIN_UNIQUE_IDS", 2)
@@ -148,25 +148,25 @@ def calculate_reid_loss_with_current_and_memory(current_features, reID_pool, rei
         normalize_feature = triplet_loss_fn.normalize_feature if hasattr(triplet_loss_fn, 'normalize_feature') else True
         
         for anchor_id, anchor_view_feat_list in features_by_id.items():
-            # 为每个anchor选择正样本和负样本
+            # pick positive and negative for each anchor
             for anchor_idx, (anchor_view, anchor_feat) in enumerate(anchor_view_feat_list):
                 
-                # ✅ 正样本：优先使用同一ID的其他视角
+                # positive: same ID, different view
                 positive_candidates = [
                     (v, f) for v, f in anchor_view_feat_list 
-                    if v != anchor_view  # 不同视角
+                    if v != anchor_view  # different view
                 ]
                 
                 if len(positive_candidates) > 0:
-                    # ✅ 使用真实的跨视角正样本（质量高）
+                    # real cross-view positive (higher quality)
                     positive_view, positive_feat = random.choice(positive_candidates)
                     num_cross_view_pairs += 1
                 else:
-                    # 退化方案：使用噪声增强（质量较低）
+                    # fallback: noise augmentation (lower quality)
                     positive_feat = anchor_feat + torch.randn_like(anchor_feat) * 0.1
                     num_noise_pairs += 1
                 
-                # 负样本：不同ID的任意视角
+                # negative: any view of a different ID
                 negative_ids = [id for id in features_by_id.keys() if id != anchor_id]
                 if len(negative_ids) == 0:
                     continue
@@ -184,7 +184,7 @@ def calculate_reid_loss_with_current_and_memory(current_features, reID_pool, rei
                     positive_feat_norm = positive_feat
                     negative_feat_norm = negative_feat
                 
-                # 计算距离
+                # compute distances
                 pos_dist = F.pairwise_distance(
                     anchor_feat_norm.unsqueeze(0) if anchor_feat_norm.dim() == 1 else anchor_feat_norm,
                     positive_feat_norm.unsqueeze(0) if positive_feat_norm.dim() == 1 else positive_feat_norm,
@@ -204,13 +204,13 @@ def calculate_reid_loss_with_current_and_memory(current_features, reID_pool, rei
             current_triplet_loss = torch.stack(triplet_losses).mean()
     
     # ========================================
-    # Part 3: 跨帧对比损失（与历史特征对比）
+    # Part 3: cross-frame contrastive loss vs history
     # ========================================
     cross_clip_loss = None
     num_memory_samples = 0
     
     if reID_pool is not None and len(current_features) > 0:
-        # 从 ReIDPool 收集历史特征
+        # collect historical features from ReIDPool
         mem_feats_list = []
         mem_ids_list = []
         
@@ -224,7 +224,7 @@ def calculate_reid_loss_with_current_and_memory(current_features, reID_pool, rei
         num_memory_samples = len(mem_feats_list)
         
         if num_memory_samples > 0:
-            # 准备当前帧特征矩阵 (N, C)
+            # current-frame feature matrix (N, C)
             curr_ids_list = []
             curr_feats_list = []
             
@@ -235,22 +235,22 @@ def calculate_reid_loss_with_current_and_memory(current_features, reID_pool, rei
             curr_feats_tensor = torch.stack(curr_feats_list)  # (N, C)
             curr_ids_tensor = torch.tensor(curr_ids_list, device=device)
             
-            # 准备历史特征矩阵 (M, C)
+            # history feature matrix (M, C)
             mem_feats_tensor = torch.stack(mem_feats_list)  # (M, C)
             mem_ids_tensor = torch.tensor(mem_ids_list, device=device)
             
-            # 归一化
+            # normalize
             curr_feats_norm = F.normalize(curr_feats_tensor, p=2, dim=1)  # (N, C)
             mem_feats_norm = F.normalize(mem_feats_tensor, p=2, dim=1)    # (M, C)
             
-            # 计算相似度矩阵 (N, M)
+            # similarity matrix (N, M)
             sim_matrix = torch.mm(curr_feats_norm, mem_feats_norm.t())  # (N, M)
             
-            # 构建正负样本掩码
+            # positive/negative masks
             pos_mask = curr_ids_tensor.unsqueeze(1) == mem_ids_tensor.unsqueeze(0)  # (N, M)
             neg_mask = ~pos_mask  # (N, M)
             
-            # 计算 Hardest Positive 和 Hardest Negative
+            # hardest positive and hardest negative
             margin = config.get("CROSS_CLIP_MARGIN", 0.5)
             
             pos_sim_masked = sim_matrix.clone()
@@ -263,14 +263,14 @@ def calculate_reid_loss_with_current_and_memory(current_features, reID_pool, rei
             neg_sim_masked[~neg_mask] = -1e9
             max_neg_sim, _ = neg_sim_masked.max(dim=1)  # (N,)
             
-            # 计算 Triplet Loss
+            # triplet loss
             losses = F.relu(margin - min_pos_sim + max_neg_sim)  # (N,)
             
             if valid_row_mask.sum() > 0:
                 cross_clip_loss = losses[valid_row_mask].mean()
     
     # ========================================
-    # 组合损失
+    # combine losses
     # ========================================
     id_loss_weight = config.get("ID_LOSS_WEIGHT", 1.0)
     triplet_loss_weight = config.get("TRIPLET_LOSS_WEIGHT", 0.1)
@@ -294,15 +294,15 @@ def calculate_reid_loss_with_current_and_memory(current_features, reID_pool, rei
     if isinstance(total_loss, int) and total_loss == 0:
         return None, None
     
-    # 统计信息
+    # statistics
     num_total_samples = sum(len(view_feat_list) for view_feat_list in features_by_id.values())
     num_unique_ids = len(features_by_id)
     
-    # 统计多视角ID的数量
+    # count multi-view IDs
     num_multi_view_ids = sum(1 for view_feat_list in features_by_id.values() if len(view_feat_list) > 1)
     
     stats_dict = {
-        'num_current_samples': num_total_samples,  # 兼容旧的key名
+        'num_current_samples': num_total_samples,  # legacy key name
         'num_total_samples': num_total_samples,
         'num_unique_ids': num_unique_ids,
         'num_multi_view_ids': num_multi_view_ids,
@@ -310,7 +310,7 @@ def calculate_reid_loss_with_current_and_memory(current_features, reID_pool, rei
         **loss_components
     }
     
-    # 如果计算了triplet loss，添加正样本来源统计
+    # triplet stats: positive source counts
     if current_triplet_loss is not None:
         stats_dict['num_cross_view_pairs'] = num_cross_view_pairs
         stats_dict['num_noise_pairs'] = num_noise_pairs
@@ -332,7 +332,7 @@ def compute_simple_triplet_loss(features_dict, margin, normalize_feature, device
     for anchor_id in unique_ids:
         anchor_feat = features_dict[anchor_id]
         
-        # 选择 negative（不同 ID）
+        # pick negative (different ID)
         negative_ids = [id for id in unique_ids if id != anchor_id]
         if len(negative_ids) == 0:
             continue
@@ -340,7 +340,7 @@ def compute_simple_triplet_loss(features_dict, margin, normalize_feature, device
         negative_id = random.choice(negative_ids)
         negative_feat = features_dict[negative_id]
         
-        # Positive: 使用相同 ID 的特征 + 小噪声作为增强
+        # positive: same-ID feature + small noise
         positive_feat = anchor_feat + torch.randn_like(anchor_feat) * 0.1
         
         # Normalize
@@ -349,7 +349,7 @@ def compute_simple_triplet_loss(features_dict, margin, normalize_feature, device
             positive_feat = F.normalize(positive_feat, p=2, dim=-1)
             negative_feat = F.normalize(negative_feat, p=2, dim=-1)
         
-        # 计算距离
+        # compute distances
         pos_dist = F.pairwise_distance(
             anchor_feat.unsqueeze(0) if anchor_feat.dim() == 1 else anchor_feat,
             positive_feat.unsqueeze(0) if positive_feat.dim() == 1 else positive_feat,
@@ -379,12 +379,12 @@ def train(config: dict):
 
     set_seed(config["SEED"])
 
-    model = build_model(config=config)#修改后的MeMOTR模型，其实还是memotr，只不过引入了reid
+    model = build_model(config=config)  # MeMOTR-based FusionTrack with ReID
 
-    # Load Pretrained Model (仅在非恢复训练时加载)
-    # 注意：PRETRAINED_MODEL 和 RESUME1 应该互斥使用
-    # - PRETRAINED_MODEL: 首次训练时加载预训练权重（如COCO预训练的backbone）
-    # - RESUME1: 恢复训练时加载之前保存的checkpoint
+    # Load pretrained weights (only when not resuming)
+    # PRETRAINED_MODEL and RESUME1 should be mutually exclusive
+    # - PRETRAINED_MODEL: initial pretrain (e.g. COCO backbone)
+    # - RESUME1: resume from saved checkpoint
     if config["PRETRAINED_MODEL"] is not None and (config.get("RESUME1") is None or config["RESUME1"] in [None, 'None', '', 'null']):
         print(f"[INFO] Loading pretrained model from: {config['PRETRAINED_MODEL']}")
         show_pretrain_details = config.get("SHOW_PRETRAIN_DETAILS", True)
@@ -397,58 +397,58 @@ def train(config: dict):
     sampler_train = build_sampler(dataset=dataset_train, shuffle=True)
     dataloader_train = build_dataloader(dataset=dataset_train, sampler=sampler_train,
                                         batch_size=config["BATCH_SIZE"], num_workers=config["NUM_WORKERS"],
-                                        config=config)# 加载数据集花费时间很长
+                                        config=config)  # dataset load can be slow
 
-    # 多视角数据集判断
+    # multi-view dataset check
     multiview_datasets = ["UAV_V", "CAMPUS", "WILDTRACK", "MvMHAT", "DIVOTrack"]
     if config["DATASET"] in multiview_datasets:
         #viewpoints = dataset_train.viewpoints
-        #我把其他地方的视角数都设置为按场景处理的了，但是reid这里我看是写死的，我先写成最大的5，不知道对4的情况是否有影响
+        # viewpoints elsewhere are scene-specific; ReID uses config VIEW_POINT count
 
         viewpoints = ["c00"+str(i+1) for i in range(config["VIEW_POINT"])]
         criterion = {}
         
-        # ==================== ReID分阶段训练配置 ====================
-        # 前N个epoch只训练跟踪，之后再训练ReID
-        reid_start_epoch = config.get("REID_START_EPOCH", 0)  # 默认0表示从第0个epoch开始训练ReID
+        # ==================== Staged ReID training ====================
+        # first N epochs: tracking only, then ReID
+        reid_start_epoch = config.get("REID_START_EPOCH", 0)  # 0 = train ReID from epoch 0
         print("="*80)
         if reid_start_epoch > 0:
-            print(f"[分阶段训练] 前 {reid_start_epoch} 个epoch只训练跟踪")
-            print(f"[分阶段训练] 从第 {reid_start_epoch} 个epoch开始训练ReID")
+            print(f"[Staged training] Training tracking only for the first {reid_start_epoch} epochs")
+            print(f"[Staged training] ReID training starts from epoch {reid_start_epoch}")
         else:
-            print(f"[分阶段训练] 从第0个epoch开始同时训练跟踪和ReID")
+            print(f"[Staged training] Training tracking and ReID jointly from epoch 0")
         print("="*80)
         
-        # ==================== ReID模型选择：只有两种 ====================
-        # 1. SimpleReIDModel：轻量级MLP模型
-        # 2. ReversibleReIDModel：权重共享可逆模型（推荐）
+        # ==================== ReID model choice (two options) ====================
+        # 1. SimpleReIDModel: lightweight MLP
+        # 2. ReversibleReIDModel: weight-shared reversible (recommended)
         use_simple_reid = config.get("USE_SIMPLE_REID", False)
         
         if use_simple_reid:
-            print(f"[ReID模型] 使用 SimpleReIDModel")
+            print(f"[ReID model] Using SimpleReIDModel")
             reid_model = build_simple_reid_model(config=config)
-            # 将SimpleReIDModel移动到GPU
+            # move SimpleReIDModel to GPU
             if config["AVAILABLE_GPUS"] is not None and config["DEVICE"] == "cuda":
                 reid_model = reid_model.to(device=torch.device(config["DEVICE"], distributed_rank()))
             else:
                 reid_model = reid_model.to(device=torch.device(config["DEVICE"]))
         else:
-            print(f"[ReID模型] 使用 ReversibleReIDModel（权重共享可逆版本）")
-            reid_model = build_reversible_reid(config=config)  # 内部已处理设备移动
+            print(f"[ReID model] Using ReversibleReIDModel (weight-shared reversible variant)")
+            reid_model = build_reversible_reid(config=config)  # device handled internally
         
-        # ==================== 初始化时冻结ReID模型（如果需要） ====================
+        # ==================== Freeze ReID at init if needed ====================
         if reid_start_epoch > 0:
-            print(f"[参数冻结] 初始化时冻结ReID模型参数（前{reid_start_epoch}个epoch不更新）")
+            print(f"[Param freeze] ReID model params frozen at init (no updates for first {reid_start_epoch} epochs)")
             for param in reid_model.parameters():
                 param.requires_grad = False
-            reid_model.eval()  # 设置为eval模式
+            reid_model.eval()  # eval mode
 
-        # 构建ReIDPool，保留整个batch的reid特征
-        keep_all_batch_reid = config.get("KEEP_ALL_BATCH_REID", True)# 这个参数目前没用上
+        # build ReIDPool to hold batch ReID features
+        keep_all_batch_reid = config.get("KEEP_ALL_BATCH_REID", True)  # currently unused
         reID_pool = build_reid_pool(views=viewpoints, max_forget_length = config["MAX_FORGET_LENGTH"], 
                                     training = True, keep_all_batch_reid=keep_all_batch_reid,reid_update_weight=config.get("REID_UPDATE_WEIGHT", 0.8))
         
-        # 初始化MemoryBank
+        # init MemoryBank
         memory_bank = MemoryBank(
             bank_len=config.get("MEMORY_BANK_LEN", 30),
             hidden_dim=config.get("HIDDEN_DIM", 256),
@@ -462,20 +462,20 @@ def train(config: dict):
         )
         memory_bank = memory_bank.to(device=torch.device("cuda", distributed_rank()) if torch.cuda.is_available() else torch.device("cpu"))
         
-        # 初始化ReID损失函数
-        # 1. 三元组损失（用于ReID特征学习）
-        triplet_loss_fn = build_triplet_loss(config=config) if config.get("USE_TRIPLET_LOSS", False) else None #构建三元组损失
+        # init ReID loss modules
+        # 1. triplet loss for ReID features
+        triplet_loss_fn = build_triplet_loss(config=config) if config.get("USE_TRIPLET_LOSS", False) else None
         
-        # 2. 不确定性加权损失（用于平衡Tracking和ReID两个任务的损失）
-        #    注意：这是元学习层的损失，用于动态调整任务权重
+        # 2. uncertainty weighting for tracking vs ReID
+        #    meta-learned task weights
         use_uncertainty_loss = config.get("USE_UNCERTAINTY_LOSS", True)
         uncertainty_loss_fn = None
         if use_uncertainty_loss:
-            uncertainty_loss_fn = build_uncertainty_loss(config=config)#只是构建了个空壳，本质在于前向传播的调用
+            uncertainty_loss_fn = build_uncertainty_loss(config=config)  # weights applied in forward
             uncertainty_loss_fn = uncertainty_loss_fn.to(device=torch.device("cuda", distributed_rank()) if torch.cuda.is_available() else torch.device("cpu"))
         
-        # 3. 可逆性损失的可学习权重（用于平衡两个可逆性损失）
-        #    仅在 USE_REVERSIBILITY_LOSS=True 且使用ReversibleReID模型时需要
+        # 3. learnable weights for two reversibility losses
+        #    when USE_REVERSIBILITY_LOSS and ReversibleReID
         use_reversibility_loss = config.get("USE_REVERSIBILITY_LOSS", True)
         use_learnable_rev_weight = (
             use_reversibility_loss and 
@@ -501,7 +501,7 @@ def train(config: dict):
             reversibility_weight_learner = build_reversibility_weight_learner(config=config)
             reversibility_weight_learner = reversibility_weight_learner.to(device=torch.device("cuda", distributed_rank()) if torch.cuda.is_available() else torch.device("cpu"))
         
-        for view in viewpoints:#每个视角一个损失
+        for view in viewpoints:  # one criterion per view
             # Criterion
             criterion_one = build_criterion(config=config)
             criterion_one.set_device(torch.device("cuda", distributed_rank()))
@@ -510,55 +510,55 @@ def train(config: dict):
         criterion = build_criterion(config=config)
     
     # Optimizer
-    param_groups, lr_names = get_param_groups(config=config, model=model)#为不同部分设置不同的学习率
+    param_groups, lr_names = get_param_groups(config=config, model=model)  # per-module LRs
 
 
-    # 多视角数据集判断
+    # multi-view dataset check
     multiview_datasets = ["UAV_V", "CAMPUS", "WILDTRACK", "MvMHAT", "DIVOTrack"]
     if config["DATASET"] in multiview_datasets: 
         param_groups_reid, lr_names_reid = get_param_groups_reid(config=config, model=reid_model)
         param_groups += param_groups_reid
         lr_names += lr_names_reid
         
-        # 添加不确定性损失参数到优化器，主要是更新权重参数
+        # add uncertainty loss params to optimizer
         if uncertainty_loss_fn is not None:
             param_groups.append({
                 'params': uncertainty_loss_fn.parameters(),
-                'lr': config.get("LR", 2.0e-4),  # 使用主学习率
+                'lr': config.get("LR", 2.0e-4),  # main LR
                 'name': 'uncertainty_loss'
             })
             lr_names.append('uncertainty_loss')
         
-        # 添加可逆性权重学习器参数到优化器
+        # add reversibility weight learner to optimizer
         if reversibility_weight_learner is not None:
             param_groups.append({
                 'params': reversibility_weight_learner.parameters(),
-                'lr': config.get("LR_REVERSIBILITY_WEIGHT", config.get("LR", 2.0e-4)),  # 使用主学习率或单独学习率
+                'lr': config.get("LR_REVERSIBILITY_WEIGHT", config.get("LR", 2.0e-4)),  # main or dedicated LR
                 'name': 'reversibility_weight'
             })
             lr_names.append('reversibility_weight')
 
     optimizer = AdamW(params=param_groups, lr=config["LR"], weight_decay=config["WEIGHT_DECAY"])
     
-    # ==================== 验证优化器参数组（调试用） ====================
+    # ==================== Verify optimizer param groups (debug) ====================
     if config["DATASET"] in multiview_datasets:
         print("="*80)
-        print("[优化器初始化验证]")
-        print(f"总参数组数量: {len(optimizer.param_groups)}")
+        print("[Optimizer init verification]")
+        print(f"Total param groups: {len(optimizer.param_groups)}")
         for i, (group, name) in enumerate(zip(optimizer.param_groups, lr_names)):
             num_params = len(group['params'])
             lr = group['lr']
             print(f"  Group {i} ({name:25s}): {num_params:4d} params, lr={lr:.2e}")
             
-            # 额外检查 ReID 参数组是否为空
+            # extra check: empty ReID param groups
             if 'reid' in name.lower() or 'base' in name.lower() or 'bottleneck' in name.lower() or 'classifier' in name.lower():
                 if num_params == 0:
-                    print(f"    ⚠️  WARNING: ReID 参数组 '{name}' 为空！")
+                    print(f"    WARNING: ReID param group '{name}' is empty!")
                 else:
-                    # 检查这些参数的 requires_grad 状态
+                    # check requires_grad on params
                     num_trainable = sum(1 for p in group['params'] if p.requires_grad)
                     num_frozen = num_params - num_trainable
-                    print(f"    ✅ 可训练: {num_trainable}, 冻结: {num_frozen}")
+                    print(f"    Trainable: {num_trainable}, frozen: {num_frozen}")
         print("="*80)
     
     # Scheduler
@@ -593,7 +593,7 @@ def train(config: dict):
             for _ in range(train_states["start_epoch"]):
                 scheduler.step()
     
-    # 加载ReID模型（如果指定了RESUME2）
+    # load ReID model if RESUME2 set
     if config["DATASET"] in multiview_datasets and config.get("RESUME2") is not None and config["RESUME2"] not in [None, 'None', '', 'null']:
         print(f"[INFO] Loading ReID model from checkpoint: {config['RESUME2']}")
         load_checkpoint(model=reid_model, path=config["RESUME2"], states=train_states)
@@ -601,44 +601,44 @@ def train(config: dict):
     # Set start epoch
     start_epoch = train_states["start_epoch"]
 
-    # ==================== DDP包装 ====================
+    # ==================== DDP wrap ====================
     reid_start_epoch = config.get("REID_START_EPOCH", 0)
     
     if is_distributed():
-        # 主模型：始终有可训练参数，直接包装DDP
+        # main model: always has trainable params -> DDP
         model = DDP(module=model, device_ids=[distributed_rank()], find_unused_parameters=True)
         
-        # ReID模型：根据分阶段训练策略决定是否包装DDP
+        # ReID: DDP depends on staged training
         if config["DATASET"] in multiview_datasets:
             has_trainable_params = any(p.requires_grad for p in reid_model.parameters())
             
             if has_trainable_params:
-                # 有可训练参数：直接包装DDP（REID_START_EPOCH=0的情况）
+                # trainable params -> wrap DDP (REID_START_EPOCH=0)
                 reid_model = DDP(module=reid_model, device_ids=[distributed_rank()], find_unused_parameters=True)
-                print(f"[DDP初始化] ReID模型已包装DDP（rank={distributed_rank()}）")
+                print(f"[DDP init] ReID model wrapped with DDP (rank={distributed_rank()})")
             else:
-                # 参数被冻结：仅移动到GPU，稍后在epoch循环中动态包装DDP
+                # frozen: GPU only; wrap DDP later in epoch loop
                 reid_model = reid_model.to(torch.device(f"cuda:{distributed_rank()}"))
-                print(f"[DDP初始化] ReID模型参数被冻结，仅移动到GPU（rank={distributed_rank()}）")
-                print(f"[DDP初始化] 将在epoch={reid_start_epoch}时动态包装DDP")
+                print(f"[DDP init] ReID model frozen, moved to GPU only (rank={distributed_rank()})")
+                print(f"[DDP init] Will wrap with DDP dynamically at epoch={reid_start_epoch}")
 
     multi_checkpoint = "MULTI_CHECKPOINT" in config and config["MULTI_CHECKPOINT"]
 
     # Training:
     
     for epoch in range(start_epoch, config["EPOCHS"]):
-        # 为分布式训练和数据增强设置epoch（不需要重新构建sampler/dataloader）
+        # set epoch for distributed sampler and aug (no rebuild)
         if is_distributed():
             sampler_train.set_epoch(epoch)
         dataset_train.set_epoch(epoch)
 
-        # ⚠️ 仅训练query_updater模式：冻结backbone、points和其他非query_updater参数
+        # query_updater-only mode: freeze backbone/points/other
         if epoch >= config["ONLY_TRAIN_QUERY_UPDATER_AFTER"]:
-            # 🔧 修复：使用lr_names动态匹配，避免硬编码索引（更健壮）
+            # use lr_names for dynamic LR groups (avoid hard-coded indices)
             for idx, name in enumerate(lr_names):
                 if name in ["lr_backbone", "lr_points", "lr"] and name != "lr_query_updater":
                     optimizer.param_groups[idx]["lr"] = 0.0
-            # 注意：ReID相关的参数组不受影响，继续训练
+            # ReID param groups unchanged
         lrs = [optimizer.param_groups[_]["lr"] for _ in range(len(optimizer.param_groups))]
         assert len(lrs) == len(lr_names)
         lr_info = [{name: lr} for name, lr in zip(lr_names, lrs)]
@@ -657,22 +657,22 @@ def train(config: dict):
                     no_grad_frames = config["NO_GRAD_FRAMES"][i]
                     break
         
-        # ==================== ReID分阶段训练：动态启用/禁用 ====================
+        # ==================== Staged ReID: enable/disable ====================
         reid_start_epoch = config.get("REID_START_EPOCH", 0)
         enable_reid_training = (epoch >= reid_start_epoch)
         
-        # ⭐ ReID学习率预热（从reid_start_epoch开始，线性增长）
+        # ReID LR warmup from reid_start_epoch (linear)
         reid_warmup_epochs = config.get("REID_WARMUP_EPOCHS", 0)
         if enable_reid_training and reid_warmup_epochs > 0:
             epochs_since_reid_start = epoch - reid_start_epoch
             if epochs_since_reid_start < reid_warmup_epochs:
-                # 预热阶段：学习率从0线性增长到目标值
+                # warmup: LR 0 -> target linearly
                 warmup_factor = (epochs_since_reid_start + 1) / reid_warmup_epochs
                 
-                # 调整ReID相关的学习率
+                # adjust ReID LR groups
                 for idx, name in enumerate(lr_names):
                     if name in ["lr_reid", "lr_bottleneck", "lr_classifier"]:
-                        # 获取目标学习率（配置文件中的值）
+                        # target LR from config
                         if name == "lr_reid":
                             target_lr = config.get("LR_REID", config["LR"])
                         elif name == "lr_bottleneck":
@@ -680,60 +680,60 @@ def train(config: dict):
                         elif name == "lr_classifier":
                             target_lr = config.get("LR_CLASSIFIER", config.get("LR_REID", config["LR"]))
                         
-                        # 应用预热因子
+                        # apply warmup factor
                         optimizer.param_groups[idx]["lr"] = target_lr * warmup_factor
                 
-                train_logger.show(f"[Epoch {epoch}] 🔥 ReID学习率预热中：{warmup_factor:.2%} "
-                                f"(第{epochs_since_reid_start+1}/{reid_warmup_epochs}个预热epoch)")
+                train_logger.show(f"[Epoch {epoch}] ReID LR warmup: {warmup_factor:.2%} "
+                                f"(warmup epoch {epochs_since_reid_start+1}/{reid_warmup_epochs})")
         
-        # 在达到指定epoch时，解冻ReID模型参数并动态包装DDP
+        # at reid_start_epoch: unfreeze ReID and wrap DDP
         if reid_start_epoch > 0 and epoch == reid_start_epoch:
             train_logger.show(f"="*80)
-            train_logger.show(f"[Epoch {epoch}] 🎯 开始训练ReID模型！")
-            train_logger.write(f"[Epoch {epoch}] 开始训练ReID模型！")
+            train_logger.show(f"[Epoch {epoch}] Starting ReID model training!")
+            train_logger.write(f"[Epoch {epoch}] Starting ReID model training!")
             
-            # Step 1: 解冻ReID模型参数
-            train_logger.show(f"[Epoch {epoch}]   Step 1/3: 解冻ReID参数...")
+            # Step 1: unfreeze ReID params
+            train_logger.show(f"[Epoch {epoch}]   Step 1/3: Unfreezing ReID params...")
             for param in reid_model.parameters():
                 param.requires_grad = True
             
-            # Step 2: 关键！如果是分布式环境，动态包装为DDP
+            # Step 2: wrap DDP in distributed mode
             if is_distributed():
-                train_logger.show(f"[Epoch {epoch}]   Step 2/3: 包装DDP（rank={distributed_rank()}）...")
-                # 注意：这里重新赋值reid_model变量
+                train_logger.show(f"[Epoch {epoch}]   Step 2/3: Wrapping DDP (rank={distributed_rank()})...")
+                # reassign reid_model here
                 reid_model = DDP(module=reid_model, device_ids=[distributed_rank()], find_unused_parameters=True)
-                train_logger.show(f"[Epoch {epoch}]   ✅ ReID模型已成功包装为DDP")
+                train_logger.show(f"[Epoch {epoch}]   ReID model wrapped with DDP successfully")
             else:
-                train_logger.show(f"[Epoch {epoch}]   Step 2/3: 非分布式模式，跳过DDP包装")
+                train_logger.show(f"[Epoch {epoch}]   Step 2/3: Non-distributed mode, skipping DDP wrap")
             
-            # Step 3: 设置为训练模式
-            train_logger.show(f"[Epoch {epoch}]   Step 3/3: 设置为训练模式...")
+            # Step 3: train mode
+            train_logger.show(f"[Epoch {epoch}]   Step 3/3: Setting train mode...")
             reid_model.train()
             
-            # Step 4: 验证优化器是否包含ReID参数
-            train_logger.show(f"[Epoch {epoch}]   🔄 检查优化器参数...")
+            # Step 4: verify ReID params in optimizer
+            train_logger.show(f"[Epoch {epoch}]   Checking optimizer params...")
             
-            # 🔧 修复：DDP包装后需要使用get_model获取底层模型
+            # after DDP, use get_model for underlying module
             reid_model_for_check = get_model(reid_model)
             reid_params_set = set(reid_model_for_check.parameters())
             
             reid_params_in_optimizer = sum(1 for group in optimizer.param_groups 
                                            for p in group['params'] 
                                            if p in reid_params_set)
-            train_logger.show(f"[Epoch {epoch}]   优化器中ReID参数数量: {reid_params_in_optimizer}")
+            train_logger.show(f"[Epoch {epoch}]   ReID params in optimizer: {reid_params_in_optimizer}")
             
-            # 检查requires_grad状态
+            # check requires_grad
             num_trainable = sum(1 for p in reid_params_set if p.requires_grad)
-            train_logger.show(f"[Epoch {epoch}]   ReID可训练参数数量: {num_trainable}")
+            train_logger.show(f"[Epoch {epoch}]   ReID trainable params: {num_trainable}")
             
-            train_logger.show(f"[Epoch {epoch}] ✅ ReID模型已完全启动！")
+            train_logger.show(f"[Epoch {epoch}] ReID model fully enabled!")
             train_logger.show(f"="*80)
         
-        # 显示当前epoch的训练状态
+        # log current epoch training mode
         if epoch < reid_start_epoch:
-            train_logger.show(f"[Epoch {epoch}] 📍 当前模式：只训练跟踪（ReID模型冻结）")
+            train_logger.show(f"[Epoch {epoch}] Current mode: tracking only (ReID frozen)")
         else:
-            train_logger.show(f"[Epoch {epoch}] 📍 当前模式：同时训练跟踪和ReID")
+            train_logger.show(f"[Epoch {epoch}] Current mode: joint tracking and ReID training")
 
         train_one_epoch(
             model=model,
@@ -750,13 +750,13 @@ def train(config: dict):
             no_grad_frames=no_grad_frames,
             reid_model=reid_model,
             reID_pool=reID_pool,
-            enable_reid_training=enable_reid_training,  # 新增：控制是否训练ReID
+            enable_reid_training=enable_reid_training,  # whether to train ReID
             memory_bank=memory_bank,
             triplet_loss_fn=triplet_loss_fn,
             uncertainty_loss_fn=uncertainty_loss_fn,
-            reversibility_weight_learner=reversibility_weight_learner,  # 新增：可逆性权重学习器
+            reversibility_weight_learner=reversibility_weight_learner,  # reversibility weight learner
             config=config,
-            lr_names=lr_names  # ⭐ 传递学习率名称列表
+            lr_names=lr_names  # LR group names
         )
         scheduler.step()
         train_states["start_epoch"] += 1
@@ -764,7 +764,7 @@ def train(config: dict):
             pass
         else:
             if config["DATASET"] == "DanceTrack" or config["EPOCHS"] < 100 or (epoch + 1) % 2 == 0:
-                # 保存主模型（tracking model）
+                # save main tracking model
                 save_checkpoint(
                     model=model,
                     path=os.path.join(config["OUTPUTS_DIR"], f"model_checkpoint_{epoch}.pth"),
@@ -773,19 +773,19 @@ def train(config: dict):
                     scheduler=scheduler
                 )
                 
-                # 保存ReID模型（仅在多视角数据集时）
+                # save ReID model (multi-view datasets)
                 if config["DATASET"] in multiview_datasets and enable_reid_training:
-                    # 注意：推理时只需要模型权重，不需要optimizer和scheduler
+                    # inference needs weights only, not optimizer/scheduler
                     save_checkpoint(
                         model=reid_model,
                         path=os.path.join(config["OUTPUTS_DIR"], f"reid_checkpoint_{epoch}.pth"),
                         states=train_states
-                        # 不保存optimizer和scheduler，因为推理时不需要
+                        # omit optimizer/scheduler for inference checkpoints
                     )
-                # # 加载主模型
+                # # load main model
                 # load_checkpoint(model=model, path="model_checkpoint_X.pth")
 
-                # # 加载ReID模型（如果需要）
+                # # load ReID model (if needed)
                 # load_checkpoint(model=reid_model, path="reid_checkpoint_X.pth")
     return
 
@@ -796,9 +796,9 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
                     accumulation_steps: int = 1, use_dab: bool = False,
                     multi_checkpoint: bool = False,
                     no_grad_frames: int | None = None, reid_model: nn.Module = None , reID_pool: ReIDPool = None,
-                    enable_reid_training: bool = True,  # 新增：控制是否启用ReID训练 
+                    enable_reid_training: bool = True,  # enable ReID training
                     memory_bank: MemoryBank = None, triplet_loss_fn = None, uncertainty_loss_fn = None, 
-                    reversibility_weight_learner = None,  # 新增：可逆性权重学习器
+                    reversibility_weight_learner = None,  # reversibility weight learner
                     config = None, lr_names: list = None):
     """
     Args:
@@ -822,18 +822,18 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
 
     model.train()
     
-    # ⭐ 关键：根据enable_reid_training设置ReID模型的train/eval模式
+    # set ReID train/eval from enable_reid_training
     if reid_model is not None:
         if enable_reid_training:
             reid_model.train()
-            # 确认参数可训练
+            # confirm params are trainable
             trainable_params = sum(p.requires_grad for p in reid_model.parameters())
             if trainable_params == 0:
-                logger.show(f"[WARNING] ReID模型没有可训练参数！所有参数的requires_grad=False")
+                logger.show(f"[WARNING] ReID model has no trainable params! All requires_grad=False")
         else:
-            # 🔧 修复：ReID训练未启用时，应该设置为eval模式
+            # when ReID disabled, use eval mode
             reid_model.eval()
-            logger.show(f"[INFO] ReID模型设置为eval模式（当前epoch不训练ReID）")
+            logger.show(f"[INFO] ReID model set to eval mode (ReID not trained this epoch)")
     
     optimizer.zero_grad()
     device = next(get_model(model).parameters()).device
@@ -845,15 +845,15 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
     cur_frame_view = [0 for _ in criterion.keys()]
 
     for i, batch in enumerate(dataloader):
-        # ✅ 记录batch开始时间（用于计算iter耗时）
+        # record batch start time for iter timing
         
         iter_start_timestamp = time.time()
         
-        # 每个batch开始时清空MemoryBank和ReIDPool
+        # clear MemoryBank and ReIDPool each batch
         if memory_bank is not None:
             memory_bank.clear()
         if reID_pool is not None:
-            reID_pool.clear_all()  # 清空所有query、reid特征、life、frame记录
+            reID_pool.clear_all()  # clear ReID features and life counters
         
         if config["DATASET"] == "UAV_V":
             loss_view_dict = {}
@@ -861,75 +861,75 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
             global_feat_list = []
             gt_labels_list = []
             
-            # 检查batch结构：是否是多clip结构
+            # check batch layout: multi-clip or not
             is_multiclip = 'clips' in batch
             if is_multiclip:
                 clips = batch['clips']
             else:
-                # 向后兼容：单clip结构，转换为多clip格式
+                # backward compat: wrap single clip
                 clips = [batch]
             
-            # [优化] 准备手动加权的权重（仅在不使用不确定性损失时使用）
+            # manual loss weights when uncertainty loss off
             w_track_val = 1.0
             w_reid_val = config.get("ID_LOSS_WEIGHT", config.get("REID_LOSS_WEIGHT", 0.5))
             
-            # 存储 detach 后的 loss 用于日志
+            # detached losses for logging
             tracking_loss_vals = []
             reid_loss_vals = []
 
-            # 遍历每个clip
+            # iterate clips
             for clip_idx, clip_batch in enumerate(clips):
-                #每个clip开始时清空MemoryBank（可选，如果希望clip间独立）
+                # optional: clear MemoryBank at clip start
                 if memory_bank is not None and clip_idx > 0:
                     memory_bank.clear()
                 
-                # ✅ 每个clip重置帧计数（clips之间不连续）
+                # reset frame counter per clip
                 cur_frame_view = [0 for _ in criterion.keys()]
                 
-                # ✅ 累积整个clip的损失（所有帧、所有视角）
+                # accumulate loss over full clip
                 clip_total_loss = None
                 
-                # 为所有视角初始化tracks和criterion
+                # init tracks and criterion per view
                 all_view_tracks = {}
                 all_view_batches = {}
-                for view_idx, view in enumerate(criterion.keys()):#遍历视角，为每个视角初始化track
+                for view_idx, view in enumerate(criterion.keys()):  # init per view
                     view_criterion = criterion[view]
                     view_batch = clip_batch[view]
                     all_view_batches[view] = view_batch
                     
-                    # 初始化tracks
+                    # init tracks
                     tracks = TrackInstances.init_tracks(batch=view_batch,
                                                         hidden_dim=get_model(model).hidden_dim,
                                                         num_classes=get_model(model).num_classes,
                                                         device=device, use_dab=use_dab)
                     all_view_tracks[view] = tracks
                     
-                    # 初始化criterion
+                    # init criterion
                     view_criterion.init_a_clip(batch=view_batch,
                                         hidden_dim=get_model(model).hidden_dim,
                                         num_classes=get_model(model).num_classes,
                                         device=device)
 
-                # 获取帧数（所有视角的帧数相同，获取第一个视角的就可以）
+                # frame count (same across views; use first)
                 first_view = list(criterion.keys())[0]
                 num_frames = len(all_view_batches[first_view]["imgs"][0])
                 
-                # 按帧处理
+                # process frame by frame
                 for frame_idx in range(num_frames):
-                    # 用于累积当前帧所有视角的损失
+                    # accumulate per-view losses for this frame
                     frame_losses = []
-                    frame_log_dict = {}  # 用于记录当前帧的详细损失
+                    frame_log_dict = {}  # detailed per-frame loss log
                     
-                    # 收集当前帧的 ReID 特征（保持梯度）
-                    # 使用 (view, track_id) 作为key，避免不同视角的相同ID被覆盖
+                    # collect current-frame ReID features (keep grad)
+                    # key (view, track_id) avoids cross-view ID collision
                     current_frame_reid_features = {}  # {(view, track_id): reid_feat} 
                     
-                    # 收集当前帧所有视角的tracks和reid特征（用于批量更新MemoryBank）
+                    # tracks/ReID feats for batch MemoryBank update
                     frame_all_view_tracks = {}  # {view: tracks}
                     frame_all_reid_features = {}  # {(view, id): reid_feat}
-                    frame_reversibility_losses = []  # 收集可逆性损失
+                    frame_reversibility_losses = []  # collect reversibility losses
                     
-                    # 1. 按视角顺序进行模型forward和处理
+                    # 1. forward and process per view
                     for view_idx, view in enumerate(criterion.keys()):
                         view_criterion = criterion[view]
                         view_batch = all_view_batches[view]
@@ -941,10 +941,10 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
                                 f.requires_grad_(False)
                             frame = tensor_list_to_nested_tensor(tensor_list=frame).to(device)
                             
-                            # 准备视角ID（从infos中获取，batch_size=1时）
+                            # view ID from infos (batch_size=1)
                             view_id_tensor = None
                             if len(view_batch["infos"]) > 0 and frame_idx < len(view_batch["infos"][0]):
-                                # 从第一个样本的第一帧获取view_id
+                                # view_id from first sample, first frame
                                 view_id = view_batch["infos"][0][frame_idx].get('view_id', view_idx)
                                 view_id_tensor = torch.tensor([view_id], dtype=torch.long, device=device)
                             
@@ -964,17 +964,17 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
                                     frame_idx=frame_idx
                                 )
                             
-                            # 利用 process_single_frame 已经填充好的 output_embed（带梯度）
+                            # use output_embed from process_single_frame (with grad)
                             id_to_feature_map = {}
                             if config["REID_LOSS"] and enable_reid_training:
-                                # 1. 收集老轨迹的特征 (previous_tracks 在 update_tracked_instances 中已被更新)
+                                # 1. existing track features (previous_tracks updated)
                                 for b_tracks in previous_tracks:
                                     for track_idx, track_id in enumerate(b_tracks.ids):
                                         if track_id.item() >= 0:
-                                            # 直接拿 output_embed，它是 transformer 输出的对应切片，带梯度
+                                            # output_embed slice from transformer, with grad
                                             id_to_feature_map[track_id.item()] = b_tracks.output_embed[track_idx]
                                 
-                                # 2. 收集新轨迹的特征 (new_tracks 在 process_single_frame 中初始化时已赋值 output_embed)
+                                # 2. new track features (output_embed set in process_single_frame)
                                 for b_tracks in new_tracks:
                                     for track_idx, track_id in enumerate(b_tracks.ids):
                                         if track_id.item() >= 0:
@@ -983,14 +983,14 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
                             if frame_idx < len(view_batch["imgs"][0]) - 1:
                                 tracks_updated = get_model(model).postprocess_single_frame(
                                     previous_tracks, new_tracks, unmatched_dets)
-                                # 更新all_view_tracks，供下一帧的跨视角更新使用
+                                # update all_view_tracks for next frame
                                 all_view_tracks[view] = tracks_updated
                             else:
-                                # 最后一帧也需要合并以提取特征
+                                # merge last frame too for feature extraction
                                 tracks_updated = get_model(model).postprocess_single_frame(
                                     previous_tracks, new_tracks, unmatched_dets)
                             
-                            # 提取 ReID 特征（现在只需要查表，安全且快）
+                            # extract ReID features via lookup table
                             reid_features_dict = {}
                             if config["REID_LOSS"] and enable_reid_training:
                                 for t_idx, track in enumerate(tracks_updated):
@@ -998,59 +998,59 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
                                         tid = track_id.item()
                                         if tid >= 0:
                                             if tid in id_to_feature_map:
-                                                # 查表直接获取对应的 Transformer 输出特征
+                                                # lookup transformer output feature
                                                 query_feat = id_to_feature_map[tid]
                                                 
-                                                # 准备ReID输入：支持单帧或多帧query
+                                                # ReID input: single- or multi-frame query
                                                 use_multiframe_reid = config.get("USE_MULTIFRAME_REID", False)
                                                 
                                                 if use_multiframe_reid and memory_bank is not None:
-                                                    # 使用多帧query（列表格式）
+                                                    # multi-frame query list
                                                     window_size = config.get("REID_QUERY_WINDOW_SIZE", 5)
                                                     history_queries = extract_multiframe_queries_from_memorybank(
                                                         memory_bank, tid, view, window_size
                                                     )
                                                     
-                                                    # 拼接历史query列表 + 当前query
-                                                    # history_queries是List[Tensor(dim,)]，可能为空列表、1帧、2帧...最多window_size帧
-                                                    query_list = history_queries + [query_feat]  # 添加当前帧到列表末尾
-                                                    query_input = query_list  # 直接作为列表传入ReID模型
+                                                    # history queries + current query
+                                                    # history_queries: List[Tensor(dim)] up to window_size
+                                                    query_list = history_queries + [query_feat]  # append current frame
+                                                    query_input = query_list  # pass list to ReID model
                                                 else:
-                                                    # 使用单帧query（旧方式）
+                                                    # single-frame query (legacy)
                                                     query_input = [query_feat.unsqueeze(0)]
                                                 
-                                                # 经过reid模型得到重识别特征
+                                                # ReID model -> embedding
                                                 with torch.set_grad_enabled(True):
                                                     use_simple_reid = config.get("USE_SIMPLE_REID", False)
                                                     
                                                     if use_simple_reid:
-                                                        # SimpleReID模型：训练模式返回 (cls_score, reid_feat)
+                                                        # SimpleReID train mode: (cls_score, reid_feat)
                                                         _, reid_feat = get_model(reid_model)(query_input, None)
                                                     else:
-                                                        # ReversibleReID模型：训练模式返回 (reid_feat, rev_loss1, rev_loss2
+                                                        # ReversibleReID train mode: (reid_feat, rev_loss1, rev_loss2)
                                                         reid_output = reid_model(query_input, None)
                                                         if isinstance(reid_output, tuple) and len(reid_output) == 3:
-                                                            # 训练模式：解包3个值
+                                                            # train mode: unpack 3 values
                                                             reid_feat, rev_loss1, rev_loss2 = reid_output
-                                                            # 收集可逆性损失
+                                                            # collect reversibility losses
                                                             frame_reversibility_losses.append((rev_loss1, rev_loss2))
                                                         else:
-                                                            # 推理模式：直接返回特征
+                                                            # eval mode: feature only
                                                             reid_feat = reid_output
                                                     
-                                                    # 处理返回值（统一格式）
+                                                    # normalize return format
                                                     if isinstance(reid_feat, tuple):
                                                         reid_feat = reid_feat[1]
                                                     if reid_feat.dim() > 1:
                                                         reid_feat = reid_feat[0]
                                                     
-                                                    # L2归一化：与TripletLoss保持一致
+                                                    # L2 normalize (match TripletLoss)
                                                     reid_feat = torch.nn.functional.normalize(reid_feat, p=2, dim=-1)
                                                     
-                                                    reid_features_dict[tid] = reid_feat  # 视角内部的dict
-                                                    current_frame_reid_features[(view, tid)] = reid_feat  # ✅ 使用组合key避免覆盖
+                                                    reid_features_dict[tid] = reid_feat  # per-view dict
+                                                    current_frame_reid_features[(view, tid)] = reid_feat  # composite key avoids overwrite
                             
-                            # 更新tracks为postprocess后的结果
+                            # tracks after postprocess
                             if frame_idx < len(view_batch["imgs"][0]) - 1:
                                 tracks = tracks_updated
                         else:
@@ -1060,7 +1060,7 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
                                     f.requires_grad_(False)
                                 frame = tensor_list_to_nested_tensor(tensor_list=frame).to(device)
                                 
-                                # 准备视角ID
+                                # view ID
                                 view_id_tensor = None
                                 if len(view_batch["infos"]) > 0 and frame_idx < len(view_batch["infos"][0]):
                                     view_id = view_batch["infos"][0][frame_idx].get('view_id', view_idx)
@@ -1081,32 +1081,32 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
                                         frame_idx=frame_idx
                                     )
                                 
-                                # 建立 {Track_ID: Feature} 映射表（no_grad模式，使用 output_embed）
+                                # {track_id: feature} map (no_grad, output_embed)
                                 id_to_feature_map = {}
                                 if config["REID_LOSS"] and enable_reid_training:
-                                    # 1. 收集老轨迹的特征
+                                    # 1. collect existing track features
                                     for b_tracks in previous_tracks:
                                         for track_idx, track_id in enumerate(b_tracks.ids):
                                             if track_id.item() >= 0:
                                                 id_to_feature_map[track_id.item()] = b_tracks.output_embed[track_idx]
                                     
-                                    # 2. 收集新轨迹的特征
+                                    # 2. collect new track features
                                     for b_tracks in new_tracks:
                                         for track_idx, track_id in enumerate(b_tracks.ids):
                                             if track_id.item() >= 0:
                                                 id_to_feature_map[track_id.item()] = b_tracks.output_embed[track_idx]
                                 
-                                # 执行postprocess
+                                # postprocess
                                 if frame_idx < len(view_batch["imgs"][0]) - 1:
                                     tracks_updated = get_model(model).postprocess_single_frame(
                                         previous_tracks, new_tracks, unmatched_dets, no_augment=frame_idx < no_grad_frames-1)
                                     all_view_tracks[view] = tracks_updated
                                 else:
-                                    # 最后一帧也需要合并以提取特征
+                                    # merge last frame too for feature extraction
                                     tracks_updated = get_model(model).postprocess_single_frame(
                                         previous_tracks, new_tracks, unmatched_dets, no_augment=False)
                                 
-                                # 提取 ReID 特征（只提取有效目标的reid特征，-1的就是皮配不上的
+                                # extract ReID for valid IDs only (-1 = unmatched)
                                 reid_features_dict = {}
                                 if config["REID_LOSS"] and enable_reid_training:
                                     for t_idx, track in enumerate(tracks_updated):
@@ -1116,109 +1116,109 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
                                                 if tid in id_to_feature_map:
                                                     query_feat = id_to_feature_map[tid]
                                                     
-                                                    # 准备ReID输入：支持单帧或多帧query
+                                                    # ReID input: single- or multi-frame query
                                                     use_multiframe_reid = config.get("USE_MULTIFRAME_REID", False)
                                                     
                                                     if use_multiframe_reid and memory_bank is not None:
-                                                        # 使用多帧query（列表格式）
+                                                        # multi-frame query list
                                                         window_size = config.get("REID_QUERY_WINDOW_SIZE", 5)
                                                         history_queries = extract_multiframe_queries_from_memorybank(
                                                             memory_bank, tid, view, window_size
                                                         )
                                                         
-                                                        # 拼接历史query列表 + 当前query
+                                                        # history queries + current query
                                                         query_list = history_queries + [query_feat]
-                                                        query_input = query_list  # 直接作为列表传入ReID模型
+                                                        query_input = query_list  # pass list to ReID model
                                                     else:
-                                                        # 使用单帧query（旧方式）
+                                                        # single-frame query (legacy)
                                                         query_input = [query_feat.unsqueeze(0)]
                                                     
                                                     use_simple_reid = config.get("USE_SIMPLE_REID", False)
                                                     
-                                                    # 两种模型在no_grad模式下都只返回特征
+                                                    # both models return features only in no_grad
                                                     reid_feat = get_model(reid_model)(query_input, None)
                                                     
-                                                    # 处理返回值
+                                                    # handle return value
                                                     if isinstance(reid_feat, tuple):
                                                         reid_feat = reid_feat[1]
                                                     if reid_feat.dim() > 1:
                                                         reid_feat = reid_feat[0]
                                                     reid_features_dict[tid] = reid_feat
                                 
-                                # 更新tracks为postprocess后的结果
+                                # tracks after postprocess
                                 if frame_idx < len(view_batch["imgs"][0]) - 1:
                                     tracks = tracks_updated
                         
                         if config["REID_LOSS"] and enable_reid_training:
-                            # ReIDPool存储的是历史特征，不需要梯度，必须detach防止显存爆炸
+                            # ReIDPool stores history; detach to save memory
                             reid_features_detached = {k: v.detach() for k, v in reid_features_dict.items()} if len(reid_features_dict) > 0 else None
                             
-                            # 更新pool，传入detached特征
+                            # update pool with detached features
                             reID_pool.update_pool(view, tracks, cur_frame_view[view_idx] + frame_idx, 
                                                 reid_features=reid_features_detached)
                             
-                            # 收集当前视角的tracks和reid特征（稍后批量更新MemoryBank）
-                            # MemoryBank同样需要detached特征，避免计算图累积
+                            # collect tracks/ReID for batch MemoryBank update
+                            # MemoryBank also needs detached feats
                             if memory_bank is not None:
                                 frame_all_view_tracks[view] = tracks
                                 if len(reid_features_dict) > 0:
                                     for track_id, reid_feat in reid_features_dict.items():
-                                        # ✅ 存入MemoryBank的特征也必须detach
+                                        # detach features stored in MemoryBank
                                         frame_all_reid_features[(view, track_id)] = reid_feat.detach()
                         
-                    # 计算当前视角的损失
+                    # per-view loss
                     loss_dict, log_dict = view_criterion.get_mean_by_n_gts()
                     view_loss = view_criterion.get_sum_loss_dict(loss_dict=loss_dict)
                     
-                    # 1. 记录 Loss 数值用于日志
+                    # 1. log loss values
                     if view not in loss_view_dict:
                         loss_view_dict[view] = view_loss.item()
                     else:
                         loss_view_dict[view] += view_loss.item()
                     
-                    # 2. 记录 Detach Loss 用于权重更新
+                    # 2. detached loss for weighting
                     tracking_loss_vals.append(view_loss.detach())
                     
-                    # 3. 累积当前帧的损失（原始损失，不加权）
+                    # 3. accumulate raw frame losses
                     frame_losses.append(view_loss)
                     
-                    # 4. 累积当前帧的详细损失信息（用于日志）
-                    # 确保只存储数值，不存储tensor，避免计算图残留
+                    # 4. detailed frame loss log
+                    # store scalars only, not tensors
                     for log_k, log_v in log_dict.items():
                         if log_k not in frame_log_dict:
                             frame_log_dict[log_k] = []
-                        # 如果是tensor，提取数值；否则直接存储
+                        # tensor -> scalar if needed
                         val = log_v[0].item() if isinstance(log_v[0], torch.Tensor) else log_v[0]
                         frame_log_dict[log_k].append(val)
                     
-                    # 5. 释放不再需要的变量
+                    # 5. free unused vars
                     del res
                     
-                    # 当前帧的所有视角处理完后，一次性更新MemoryBank
-                    # MemoryBank只做跨帧更新（temporal update）
+                    # after all views: batch MemoryBank update
+                    # MemoryBank: temporal update only
                     if memory_bank is not None and config["REID_LOSS"] and enable_reid_training and len(frame_all_view_tracks) > 0:
-                        # 所有视角使用相同的时间戳（取第一个视角的时间戳）
+                        # shared timestamp (first view counter)
                         t = cur_frame_view[0] + frame_idx
                         memory_bank.push_from_views(
                             frame_all_view_tracks,
                             t
                         )
                         
-                        # 训练时：使用GT ID选择ReID特征来更新query
-                        # 这一步在跨帧更新之后，使用ReID特征来增强query
+                        # training: update query from ReID via GT ID
+                        # after temporal update, enhance query with ReID
                         if len(frame_all_reid_features) > 0:
                             from models.query_update_from_reid import update_query_with_reid_features
                             
                             for view in frame_all_view_tracks.keys():
                                 tracks = frame_all_view_tracks[view]
-                                # 提取该视角的ReID特征
+                                # ReID features for this view
                                 view_reid_features = {}
                                 for (v, track_id), reid_feat in frame_all_reid_features.items():
                                     if v == view:
                                         view_reid_features[track_id] = reid_feat
                                 
                                 if len(view_reid_features) > 0:
-                                    # 根据GT ID更新query（原地修改）
+                                    # update query in-place by GT ID
                                     update_query_with_reid_features(
                                         tracks=tracks,
                                         reid_features=view_reid_features,
@@ -1226,118 +1226,118 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
                                         use_dab=config["USE_DAB"]
                                     )
                     
-                    #  当前帧的所有视角处理完后，计算总损失（Tracking + ReID）
+                    # total frame loss (tracking + ReID)
                     if len(frame_losses) > 0:
-                        # frame_tracking_loss 是原始的跟踪损失（未加权）
+                        # raw tracking loss (unweighted)
                         frame_tracking_loss = sum(frame_losses)
                         
-                        #  计算 ReID loss：当前帧内部 + 跨帧对比
+                        # ReID loss: in-frame + cross-frame
                         frame_reid_loss = None
                         reid_stats = None
-                        # 🔥 关键：只有在启用ReID训练时才计算ReID损失
+                        # compute ReID loss only when ReID training enabled
                         if config["REID_LOSS"] and enable_reid_training:
-                            # 使用当前帧特征 + ReIDPool 历史特征计算损失
+                            # loss from current feats + ReIDPool history
                             frame_reid_loss, reid_stats = calculate_reid_loss_with_current_and_memory(
-                                current_features=current_frame_reid_features,  # 当前帧特征（有梯度）
-                                reID_pool=reID_pool,  # 历史特征池（detached）
+                                current_features=current_frame_reid_features,  # current frame (with grad)
+                                reID_pool=reID_pool,  # history pool (detached)
                                 reid_model=reid_model,
                                 triplet_loss_fn=triplet_loss_fn,
                                 config=config,
                                 device=device
                             )
                         
-                        # 计算可逆性损失（
+                        # reversibility loss
                         frame_reversibility_loss = None
                         if not config.get("USE_SIMPLE_REID", False) and len(frame_reversibility_losses) > 0:
-                            # 使用ReversibleReID模型时，累积所有可逆性损失
+                            # sum reversibility losses from ReversibleReID
                             total_rev_loss1 = sum([loss[0] for loss in frame_reversibility_losses])
                             total_rev_loss2 = sum([loss[1] for loss in frame_reversibility_losses])
                             
-                            # 应用可学习权重（如果启用）
+                            # apply learnable weights if enabled
                             if reversibility_weight_learner is not None:
                                 frame_reversibility_loss, rev_loss_dict = reversibility_weight_learner(
                                     total_rev_loss1, total_rev_loss2
                                 )
-                                # 记录详细信息
+                                # log details
                                 metric_log.update(name=f"frame{frame_idx}_reversibility_loss1_raw", value=total_rev_loss1.item())
                                 metric_log.update(name=f"frame{frame_idx}_reversibility_loss2_raw", value=total_rev_loss2.item())
                                 metric_log.update(name=f"frame{frame_idx}_reversibility_weight1", value=rev_loss_dict['weight1'])
                                 metric_log.update(name=f"frame{frame_idx}_reversibility_weight2", value=rev_loss_dict['weight2'])
                                 metric_log.update(name=f"frame{frame_idx}_reversibility_loss_weighted", value=frame_reversibility_loss.item())
                             else:
-                                # 不使用可学习权重，直接求和
+                                # sum without learnable weights
                                 frame_reversibility_loss = total_rev_loss1 + total_rev_loss2
                                 metric_log.update(name=f"frame{frame_idx}_reversibility_loss1", value=total_rev_loss1.item())
                                 metric_log.update(name=f"frame{frame_idx}_reversibility_loss2", value=total_rev_loss2.item())
                                 metric_log.update(name=f"frame{frame_idx}_reversibility_loss_total", value=frame_reversibility_loss.item())
                         
-                        # 计算当前帧的总损失（加权）
+                        # weighted total frame loss
                         if frame_reid_loss is not None or frame_reversibility_loss is not None:
-                            # 使用不确定性加权或手动加权
+                            # uncertainty or manual weighting
                             if uncertainty_loss_fn is not None:
-                                # uncertainty_loss_fn 会自动加权（只处理tracking和reid）
+                                # uncertainty_loss_fn weights tracking + ReID
                                 frame_total_loss, loss_dict = uncertainty_loss_fn(
                                     frame_tracking_loss, frame_reid_loss if frame_reid_loss is not None else torch.tensor(0.0, device=device)
                                 )
-                                # 可逆性损失单独加入（不使用uncertainty加权）
+                                # add reversibility loss separately
                                 if frame_reversibility_loss is not None:
                                     frame_total_loss = frame_total_loss + frame_reversibility_loss
                                 
-                                # 记录权重信息（用于日志）
+                                # log weights
                                 if (i + 1) % 50 == 0 and frame_idx == 0:
                                     weights = uncertainty_loss_fn.get_weights()
                                     logger.show(f"[Iter {i+1}] Uncertainty weights: ω1={weights['omega1']:.3f}, ω2={weights['omega2']:.3f}, "
                                                f"w1={weights['weight1']:.3f}, w2={weights['weight2']:.3f}")
                                     
-                                    # 同时输出可逆性权重（如果启用）
+                                    # log reversibility weights if enabled
                                     if reversibility_weight_learner is not None:
                                         rev_weights = reversibility_weight_learner.get_weights()
                                         logger.show(f"[Iter {i+1}] Reversibility weights: w1={rev_weights['weight1']:.4f}, w2={rev_weights['weight2']:.4f}")
                             else:
-                                # 手动加权
+                                # manual weighting
                                 frame_total_loss = w_track_val * frame_tracking_loss
                                 if frame_reid_loss is not None:
                                     frame_total_loss = frame_total_loss + w_reid_val * frame_reid_loss
                                 if frame_reversibility_loss is not None:
                                     frame_total_loss = frame_total_loss + frame_reversibility_loss
                         else:
-                            # 边界情况：ReID loss 无法计算（样本不够）
+                            # edge case: ReID loss unavailable
                             if uncertainty_loss_fn is not None:
-                                # 使用不确定性加权，但 reid_loss = 0
+                                # uncertainty weighting with reid_loss = 0
                                 frame_total_loss, loss_dict = uncertainty_loss_fn(
                                     frame_tracking_loss, torch.tensor(0.0, device=device)
                                 )
                             else:
                                 frame_total_loss = w_track_val * frame_tracking_loss
                         
-                        # 累积到clip总损失，而不是立即backward
+                        # accumulate clip loss; defer backward
                         if clip_total_loss is None:
                             clip_total_loss = frame_total_loss
                         else:
                             clip_total_loss = clip_total_loss + frame_total_loss
                         
-                        # 记录用于日志
+                        # logging
                         tracking_loss_vals.append(frame_tracking_loss.detach())
                         if frame_reid_loss is not None:
                             reid_loss_vals.append(frame_reid_loss.detach())
                         
-                        # 记录每帧的损失到 metric_log
-                        # 1. 记录每帧的详细跟踪损失（box_l1, box_giou, label_focal）
+                        # per-frame metrics
+                        # 1. detailed tracking losses
                         for log_k, log_vals in frame_log_dict.items():
                             avg_val = sum(log_vals) / len(log_vals) if log_vals else 0.0
                             metric_log.update(name=log_k, value=avg_val)
                         
-                        # 2. 记录每帧的总跟踪损失
+                        # 2. total tracking loss per frame
                         metric_log.update(name=f"frame{frame_idx}_tracking_loss", value=frame_tracking_loss.item())
                         
-                        # 3. 记录每帧的 ReID 损失（仅当ReID训练启用且损失存在时）
+                        # 3. ReID loss per frame when enabled
                         total_loss_value = frame_tracking_loss.item() * w_track_val
                         
                         if enable_reid_training and frame_reid_loss is not None:
                             metric_log.update(name=f"frame{frame_idx}_reid_loss", value=frame_reid_loss.item())
                             total_loss_value += frame_reid_loss.item() * w_reid_val
                             
-                            # 记录 ReID 损失的详细统计信息
+                            # detailed ReID loss stats
                             if reid_stats is not None:
                                 metric_log.update(name=f"frame{frame_idx}_reid_total_samples", value=float(reid_stats['num_total_samples']))
                                 metric_log.update(name=f"frame{frame_idx}_reid_unique_ids", value=float(reid_stats['num_unique_ids']))
@@ -1355,28 +1355,28 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
                                     metric_log.update(name=f"frame{frame_idx}_reid_cross_view_pairs", value=float(reid_stats['num_cross_view_pairs']))
                                     metric_log.update(name=f"frame{frame_idx}_reid_noise_pairs", value=float(reid_stats['num_noise_pairs']))
                                     
-                                    # 计算跨视角正样本比例
+                                    # cross-view positive ratio
                                     total_pairs = reid_stats['num_cross_view_pairs'] + reid_stats['num_noise_pairs']
                                     if total_pairs > 0:
                                         cross_view_ratio = reid_stats['num_cross_view_pairs'] / total_pairs
                                         metric_log.update(name=f"frame{frame_idx}_reid_cross_view_ratio", value=cross_view_ratio)
                         
-                        # 记录可逆性损失（如果有）
+                        # log reversibility loss if any
                         if frame_reversibility_loss is not None:
                             total_loss_value += frame_reversibility_loss.item()
                         
-                        # 记录总损失
+                        # log total loss
                         metric_log.update(name=f"frame{frame_idx}_total_loss", value=total_loss_value)
                         
-                        # 释放当前帧的部分变量（保留 frame_total_loss 用于累积）
+                        # free frame vars; keep frame_total_loss
                         del frame_losses, frame_tracking_loss
                         if frame_reid_loss is not None:
                             del frame_reid_loss
                 
-                # 整个clip处理完后，统一进行backward
-                # 梯度会自然累积，每 accumulation_steps 个 batch 才 optimizer.step()
+                # backward once per clip
+                # grads accumulate; step every accumulation_steps
                 if clip_total_loss is not None:
-                    # 检查损失是否有效
+                    # validate loss
                     if torch.isnan(clip_total_loss) or torch.isinf(clip_total_loss):
                         logger.show(f"[ERROR] Batch {i}, Clip {clip_idx}: Loss is NaN or Inf! "
                                    f"Loss value: {clip_total_loss.item()}")
@@ -1387,44 +1387,44 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
                     clip_total_loss.backward()
                     del clip_total_loss
                 
-        # 计算用于日志的总损失（与实际backward的损失一致）
+        # total loss for logging (matches backward)
         loss = None
         if loss is None:
-            # 已经在帧循环内 backward 了，这里只是为了日志
+            # backward done in frame loop; logging only
             if tracking_loss_vals:
-                total_tracking_loss_val = sum(tracking_loss_vals)  # 这是 tensor
+                total_tracking_loss_val = sum(tracking_loss_vals)  # tensor sum
             else:
                 total_tracking_loss_val = torch.tensor(0.0, device=device)
             
-            # 只有在ReID训练启用时才统计ReID损失
+            # ReID loss stats only when ReID training on
             if enable_reid_training and reid_loss_vals:
-                total_reid_loss_val = sum(reid_loss_vals)  # 这是 tensor
+                total_reid_loss_val = sum(reid_loss_vals)  # tensor sum
             else:
                 total_reid_loss_val = torch.tensor(0.0, device=device)
             
-            # 计算总损失（与实际backward的损失组成一致）
+            # total loss matching backward composition
             if enable_reid_training and total_reid_loss_val.item() > 0:
-                # ReID训练启用：总损失 = 跟踪损失 + ReID损失
+                # ReID on: tracking + ReID
                 loss = total_tracking_loss_val * w_track_val + total_reid_loss_val * w_reid_val
-                # 记录各部分损失
+                # log component losses
                 metric_log.update(name="batch_tracking_loss", value=total_tracking_loss_val.item())
                 metric_log.update(name="batch_reid_loss", value=total_reid_loss_val.item())
             else:
-                # ReID训练未启用：只有跟踪损失
+                # ReID off: tracking only
                 loss = total_tracking_loss_val * w_track_val
-                # 只记录跟踪损失
+                # tracking loss only
                 metric_log.update(name="batch_tracking_loss", value=total_tracking_loss_val.item())
     
-        # Metrics log - 总损失
+        # metrics log - total loss
         metric_log.update(name="total_loss", value=loss.item())
-        # loss.backward() # 已经在分步 backward 中做了
+        # loss.backward() done in per-frame/clip backward
 
         if (i + 1) % accumulation_steps == 0:
             if max_norm > 0:
 
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
                 if enable_reid_training and reid_model is not None:
-                    reid_grad_clip = config.get("REID_GRAD_CLIP", 1.0)  # 默认1.0
+                    reid_grad_clip = config.get("REID_GRAD_CLIP", 1.0)  # default 1.0
                     reid_grad_norm = torch.nn.utils.clip_grad_norm_(reid_model.parameters(), reid_grad_clip)
 
 
@@ -1436,26 +1436,26 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
             else:
                 pass
             
-            # 调试：第一个batch时打印参数更新前后的值
+            # debug: param values before/after first batch
             if i == 0 and enable_reid_training and reid_model is not None:
-                # 记录更新前的参数值（取第一个参数的一小部分）
+                # snapshot first param slice before step
                 first_param = next(reid_model.parameters())
                 param_before = first_param.data[0][:5].clone() if first_param.numel() >= 5 else first_param.data.clone()
                 
-                # ⭐ 额外调试：检查梯度是否存在
+                # debug: check gradient exists
                 grad_exists = first_param.grad is not None
                 grad_norm = first_param.grad.norm().item() if grad_exists else 0.0
-                logger.show(f"[DEBUG] 更新前 - 梯度存在: {grad_exists}, 梯度范数: {grad_norm:.6f}")
+                logger.show(f"[DEBUG] Before update - grad exists: {grad_exists}, grad norm: {grad_norm:.6f}")
             
             optimizer.step()
             
-            # 调试：第一个batch时验证参数是否被更新
+            # debug: verify param update after first batch
             if i == 0 and enable_reid_training and reid_model is not None:
                 first_param = next(reid_model.parameters())
                 param_after = first_param.data[0][:5] if first_param.numel() >= 5 else first_param.data
                 param_diff = (param_after - param_before).abs().max().item()
                 
-                # 获取当前ReID学习率
+                # current ReID LR
                 reid_lr = None
                 if lr_names is not None:
                     for idx, name in enumerate(lr_names):
@@ -1464,16 +1464,16 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
                             break
                 
                 if param_diff > 1e-8:
-                    logger.show(f"[DEBUG] ✅ ReID参数已更新！最大变化: {param_diff:.8f}, 当前LR: {reid_lr}")
+                    logger.show(f"[DEBUG] ReID params updated! Max change: {param_diff:.8f}, current LR: {reid_lr}")
                 else:
-                    logger.show(f"[WARNING] ❌ ReID参数未更新！最大变化: {param_diff:.8f}, 当前LR: {reid_lr}")
-                    logger.show(f"[WARNING] 可能原因：1) 梯度为0  2) 学习率太小  3) 梯度裁剪过严")
+                    logger.show(f"[WARNING] ReID params NOT updated! Max change: {param_diff:.8f}, current LR: {reid_lr}")
+                    logger.show(f"[WARNING] Possible causes: 1) zero grad  2) LR too small  3) grad clip too strict")
             
-            #打印optimizer的梯度大小
-            # print(f"Optimizer gradients: {[param.grad for name, param in model.named_parameters()]}") # 打印每个参数的梯度大小
+            # print optimizer grad norms
+            # print(f"Optimizer gradients: {[param.grad for name, param in model.named_parameters()]}") # print per-param gradients
             optimizer.zero_grad()
             # p.step()
-        # For logging - log_dict 已经在帧循环内记录了，这里不需要重复
+        # log_dict already filled in frame loop
         iter_end_timestamp = time.time()
         metric_log.update(name="time per iter", value=iter_end_timestamp-iter_start_timestamp)
         
@@ -1484,7 +1484,7 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
                             for gpu_id in range(distributed_world_size())]) // (1024**2)
             second_per_iter = metric_log.metrics["time per iter"].avg
             
-            # 添加训练模式标识
+            # training mode tag
             mode_tag = "Track+ReID" if enable_reid_training else "Track-Only"
             
             logger.show(head=f"[Epoch={epoch}, Iter={i}, Mode={mode_tag}, "
@@ -1494,7 +1494,7 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
                             f"Max Memory={max_memory}MB]",
                         log=metric_log)
             
-            # 打印多视角ReID统计信息
+            # multi-view ReID stats
             if enable_reid_training and 'frame0_reid_total_samples' in metric_log.metrics:
                 total_samples = metric_log.metrics.get('frame0_reid_total_samples', None)
                 unique_ids = metric_log.metrics.get('frame0_reid_unique_ids', None)
@@ -1534,19 +1534,19 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
                 log=metric_log, filename="log.txt", mode="a")
     logger.tb_add_metric_log(log=metric_log, steps=epoch, mode="epochs")
     
-    # Epoch结束：打印ReID loss详细统计（如果启用了ReID训练）
+    # epoch end: ReID loss summary when enabled
     if enable_reid_training:
         logger.show("="*80)
-        logger.show(f"[Epoch {epoch}] ReID训练统计摘要:")
+        logger.show(f"[Epoch {epoch}] ReID training summary:")
         
-        # 1. 各类损失的平均值
+        # 1. mean loss values
         if 'frame0_reid_loss' in metric_log.metrics:
             reid_loss_avg = metric_log.metrics['frame0_reid_loss'].avg
-            logger.show(f"  总ReID Loss: {reid_loss_avg:.4f}")
+            logger.show(f"  Total ReID loss: {reid_loss_avg:.4f}")
         
         if 'frame0_id_loss' in metric_log.metrics:
             id_loss_avg = metric_log.metrics['frame0_id_loss'].avg
-            logger.show(f"  ID分类Loss: {id_loss_avg:.4f}")
+            logger.show(f"  ID classification loss: {id_loss_avg:.4f}")
         
         if 'frame0_triplet_loss' in metric_log.metrics:
             triplet_loss_avg = metric_log.metrics['frame0_triplet_loss'].avg
@@ -1556,16 +1556,16 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
             cross_clip_loss_avg = metric_log.metrics['frame0_cross_clip_loss'].avg
             logger.show(f"  Cross-Clip Loss: {cross_clip_loss_avg:.4f}")
         
-        # 2. 样本统计
+        # 2. sample stats
         if 'frame0_reid_total_samples' in metric_log.metrics:
             samples_avg = metric_log.metrics['frame0_reid_total_samples'].avg
             unique_ids_avg = metric_log.metrics['frame0_reid_unique_ids'].avg
-            logger.show(f"  平均样本数: {samples_avg:.1f}, 平均唯一ID数: {unique_ids_avg:.1f}")
+            logger.show(f"  Avg samples: {samples_avg:.1f}, avg unique IDs: {unique_ids_avg:.1f}")
         
         if 'frame0_reid_multi_view_ids' in metric_log.metrics:
             multi_view_avg = metric_log.metrics['frame0_reid_multi_view_ids'].avg
             cross_view_ratio_avg = metric_log.metrics['frame0_reid_cross_view_ratio'].avg
-            logger.show(f"  多视角ID数: {multi_view_avg:.1f}, 跨视角正样本比例: {cross_view_ratio_avg:.2%}")
+            logger.show(f"  Multi-view IDs: {multi_view_avg:.1f}, cross-view positive ratio: {cross_view_ratio_avg:.2%}")
         
         logger.show("="*80)
 
@@ -1574,10 +1574,10 @@ def train_one_epoch(model: FusionTrack, train_states: dict, max_norm: float,
 
 def get_param_groups(config: dict, model: nn.Module) -> Tuple[List[Dict], List[str]]:
     """
-    用于针对不同部分的参数使用不同的 lr 等设置
+    Build param groups with different LR settings per module.
     Args:
-        config: 实验的配置信息
-        model: 需要训练的模型
+        config: experiment config
+        model: model to train
 
     Returns:
         params_group: a list of params groups.
@@ -1592,10 +1592,10 @@ def get_param_groups(config: dict, model: nn.Module) -> Tuple[List[Dict], List[s
         return matched
     # keywords
     backbone_keywords = ["backbone.backbone"]
-    points_keywords = ["reference_points", "sampling_offsets"]  # 在 transformer 中用于选取参考点和采样点的网络参数关键字
+    points_keywords = ["reference_points", "sampling_offsets"]  # transformer ref-point / sampling-offset params
     query_updater_keywords = ["query_updater"]
     param_groups = [
-        {   # backbone 学习率设置
+        {   # backbone LR
             "params": [p for n, p in model.named_parameters() if match_keywords(n, backbone_keywords) and p.requires_grad],
             "lr": config["LR_BACKBONE"]
         },
@@ -1621,23 +1621,23 @@ def get_param_groups(config: dict, model: nn.Module) -> Tuple[List[Dict], List[s
 
 
 def get_param_groups_reid(config, model):
-    # 使用ReID独立学习率（如果配置了的话）
-    lr_reid = config.get("LR_REID", config["LR"])  # 默认使用主模型LR
+    # ReID-specific LR if configured
+    lr_reid = config.get("LR_REID", config["LR"])  # default: main model LR
     lr_classifier = config.get("LR_CLASSIFIER", lr_reid)
     lr_bottleneck = config.get("LR_BOTTLENECK", lr_reid)
 
-    # 精确取参数（不会误匹配）
+    # exact param groups (no accidental overlap)
     classifier_params = list(model.classifier.parameters())
     bottleneck_params = list(model.bottleneck.parameters())
 
-    # 其他 = 全部参数 - 上面两类
+    # other = all params minus classifier/bottleneck
     used = set(id(p) for p in classifier_params + bottleneck_params)
     other_params = [p for p in model.parameters() if id(p) not in used]
 
     param_groups = [
-        {"params": other_params, "lr": lr_reid},  # ⭐ 使用lr_reid
+        {"params": other_params, "lr": lr_reid},  # use lr_reid
         {"params": bottleneck_params, "lr": lr_bottleneck},
         {"params": classifier_params, "lr": lr_classifier},
     ]
-    lr_names = ["lr_reid", "lr_bottleneck", "lr_classifier"]  # ⭐ 改名以区分
+    lr_names = ["lr_reid", "lr_bottleneck", "lr_classifier"]  # distinct LR names
     return param_groups, lr_names

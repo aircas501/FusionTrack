@@ -32,17 +32,17 @@ class ArcFace(nn.Module):
             nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(self, input, label):
-        # 此时 input 和 self.weight 已经在正确的 device 上了（由 DDP/DP 自动处理）
+        # input and self.weight are already on the correct device (handled by DDP/DP)
         cosine = F.linear(F.normalize(input), F.normalize(self.weight))
         sine = torch.sqrt((1.0 - torch.pow(cosine, 2)).clamp(0, 1))
         phi = cosine * self.cos_m - sine * self.sin_m
         phi = torch.where(cosine > self.th, phi, cosine - self.mm)
         
         # --------------------------- convert label to one-hot ---------------------------
-        # ✅ 修改点：使用 cosine.device 获取当前显卡设备，而不是写死 'cuda'
+        # Use cosine.device for the current GPU device instead of hardcoding 'cuda'
         one_hot = torch.zeros(cosine.size(), device=cosine.device)
         
-        # 同样确保 label 在同一设备上（虽然通常 forward 传进来时已经是了，但为了保险）
+        # Ensure label is on the same device (usually already true in forward, but be safe)
         label = label.to(cosine.device)
         
         one_hot.scatter_(1, label.view(-1, 1).long(), 1)
@@ -65,7 +65,7 @@ class CircleLoss(nn.Module):
         nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
 
     def __call__(self, bn_feat, targets):
-        # ✅ 修改点：确保 targets 移动到与特征相同的设备上
+        # Ensure targets are moved to the same device as the features
         targets = targets.to(bn_feat.device)
 
         sim_mat = F.linear(F.normalize(bn_feat), F.normalize(self.weight))

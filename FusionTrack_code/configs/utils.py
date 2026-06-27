@@ -5,7 +5,7 @@ import argparse
 
 def update_config_with_kv(config: dict, k: str, v) -> [bool, dict]:
     """
-    Update config with a pair of K and V from options.更新配置项
+    Update config with a pair of K and V from options.
 
     Args:
         config: Current config.
@@ -47,18 +47,18 @@ def update_config(config: dict, option: argparse.Namespace) -> dict:
     if is_unique(config)[0] is False:
         raise RuntimeError("Config's key is not unique, Please check the config file.")
 
-    # 一些由分布式启动器自动注入的参数（如 --local_rank），不需要出现在 yaml 里
+    # Some parameters auto-injected by the distributed launcher (e.g. --local_rank) need not appear in yaml
     _dist_launcher_only_keys = {
         "local_rank"
     }
 
     for option_k, option_v in vars(option).items():
         if option_k != "config_path" and option_v is not None:
-            # 跳过分布式启动器专用参数
+            # Skip distributed-launcher-only parameters
             if option_k in _dist_launcher_only_keys:
                 continue
 
-            # 其余参数必须在 yaml 中出现，否则报错
+            # All other parameters must appear in yaml, otherwise raise an error
             hit, config = update_config_with_kv(config=config, k=option_k, v=option_v)
             if hit is False:
                 raise RuntimeError("The option '--%s' is not appeared in .yaml config file." % option_k)
